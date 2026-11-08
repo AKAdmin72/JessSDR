@@ -1,0 +1,55 @@
+Schematic Update Note
+
+Project: Tang Nano 20K (3923)
+Date: 2026-10-28
+Scope: Net-label corrections and SDIO connectivity fix
+
+
+SUMMARY
+
+Corrected net labels whose encoded FPGA pin number did not match the
+actual IC1 pin, and restored the connection between the FPGA and the
+onboard microSD socket (J7).
+
+
+CHANGES
+
+1. PERIPHERALS - microSD (J7) SDIO
+
+Five FPGA-side labels differed from the J7-side labels, leaving
+DAT2/DAT3/CMD/DAT0/DAT1 disconnected from the FPGA. Labels were
+corrected to match the actual pin numbers:
+
+    PIN86_SDIO_D2  -> PIN80_SDIO_D2
+    PIN85_SDIO_D3  -> PIN81_SDIO_D3
+    PIN84_SDIO_CMD -> PIN82_SDIO_CMD
+    PIN83_SDIO_D0  -> PIN84_SDIO_D0
+    PIN82_SDIO_D1  -> PIN85_SDIO_D1
+
+SDIO_CLK is unchanged; it connects to J7 through a 22R series resistor.
+
+2. DISPLAY - LCD_INIT0..3
+
+Local labels corrected to match the actual FPGA connections:
+
+    LCD_INIT0 -> IC1.18 -> PIN18_SYS_LED3
+    LCD_INIT1 -> IC1.19 -> PIN19_SYS_LED4
+    LCD_INIT2 -> IC1.20 -> PIN20_SYS_LED5
+    LCD_INIT3 -> IC1.17 -> PIN17_SYS_LED2
+
+3. AUDIO - PA_SD_EN
+
+    PIN53_PA_SD_EN -> PIN51_PA_SD_EN (actual connection is IC1.51)
+
+4. IC1.13 - multiplexed function
+
+    Labels unified to PIN13_SPI_SCLK_5351clk2 to indicate dual use
+    (SPI clock and 5351 clock).
+
+
+VERIFICATION
+
+- Netlist regenerated after the changes.
+- All PINxx labels now match the corresponding IC1 pin numbers.
+- SDIO data/command nets now include both the FPGA and J7 pins, with
+  no unintended net merges.

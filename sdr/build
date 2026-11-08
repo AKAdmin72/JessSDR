@@ -1,0 +1,24 @@
+#!/bin/bash
+# Builds the 40m SDR (headless Gowin EDA). nco_sin.hex, fft_win.hex and
+# fft_tw.hex are read by $readmemh from sdr/ (the run cds here).
+set -e
+P="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IDE_DIR="$HOME/gowin_eda/IDE"
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libfreetype.so.6
+export LD_LIBRARY_PATH="$IDE_DIR/lib:$LD_LIBRARY_PATH"
+python3 "$P/gen_tables.py" > /dev/null
+mkdir -p "$P/build_out"
+TCL="$P/build_out/sdr.tcl"
+{
+    echo "create_project -name sdr -dir $P/build_out -pn GW2AR-LV18QN88C8/I7 -device_version C -force"
+    for f in sdr_top.v spectrum.v fft512.v floor_eq.v ddc.v ssb_demod.v audio_agc.v audio_i2s.v level_meter.v bin2bcd.v uart_tx.v uart_rx.v ili9341_driver.v tables.v sdr.cst sdr.sdc; do
+        echo "add_file $P/$f"
+    done
+    echo "set_option -top_module sdr_top"
+    echo "set_option -use_sspi_as_gpio 1"   # pins 54-56 (onboard I2S amp) are SSPI dual-purpose
+    echo "run all"
+} > "$TCL"
+cd "$P"
+"$IDE_DIR/bin/gw_sh" "$TCL"
+echo
+echo "Bitstream: $P/build_out/sdr/impl/pnr/sdr.fs"

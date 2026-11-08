@@ -1,0 +1,7 @@
+#!/bin/bash
+# Loads the ZX demo into SRAM only (flash untouched).
+set -e
+P="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FS_FILE="$P/build_out/zx_demo/impl/pnr/zx_demo.fs"
+[ -f "$FS_FILE" ] || { echo "Bitstream not found: $FS_FILE - run ./build first."; exit 1; }
+openFPGALoader -b tangnano20k "$FS_FILE"

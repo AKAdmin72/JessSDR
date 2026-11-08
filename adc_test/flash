@@ -1,0 +1,13 @@
+#!/bin/bash
+# Usage: ./flash [sram|flash]
+#   sram  (default) - temporary, lost on power-off
+#   flash           - permanent (board's SPI boot flash)
+set -e
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FS_FILE="$PROJECT_DIR/adc_test/impl/pnr/adc_test.fs"
+[ -f "$FS_FILE" ] || { echo "Bitstream not found: $FS_FILE - run ./build first."; exit 1; }
+case "${1:-sram}" in
+    sram)  openFPGALoader -b tangnano20k "$FS_FILE" ;;
+    flash) openFPGALoader -b tangnano20k -f "$FS_FILE" ;;
+    *) echo "Usage: $0 [sram|flash]"; exit 1 ;;
+esac

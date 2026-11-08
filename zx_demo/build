@@ -1,0 +1,22 @@
+#!/bin/bash
+# Builds the ZX-style demo for Tang Nano 20K (headless Gowin EDA).
+# Tables (font, text, poses, skeleton): python3 gen_tables.py -> tables.v
+set -e
+P="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IDE_DIR="$HOME/gowin_eda/IDE"
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libfreetype.so.6
+export LD_LIBRARY_PATH="$IDE_DIR/lib:$LD_LIBRARY_PATH"
+python3 "$P/gen_tables.py"
+mkdir -p "$P/build_out"
+TCL="$P/build_out/zx_demo.tcl"
+{
+    echo "create_project -name zx_demo -dir $P/build_out -pn GW2AR-LV18QN88C8/I7 -device_version C -force"
+    for f in zx_demo_top.v beat_gen.v dancer.v brush_line.v fb_ram.v tables.v ili9341_driver.v zx_demo.cst zx_demo.sdc; do
+        echo "add_file $P/$f"
+    done
+    echo "set_option -top_module zx_demo_top"
+    echo "run all"
+} > "$TCL"
+"$IDE_DIR/bin/gw_sh" "$TCL"
+echo
+echo "Bitstream: $P/build_out/zx_demo/impl/pnr/zx_demo.fs"

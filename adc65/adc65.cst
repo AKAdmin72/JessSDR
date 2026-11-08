@@ -1,0 +1,36 @@
+// Tang Nano 20K - AD9226 @ 64.8 MSPS + UART dump. ADC pins = ../adc_test/adc_test.cst
+IO_LOC "clk" 4;
+IO_PORT "clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_LOC "adc_d[0]"    31;   // J6-14
+IO_LOC "adc_d[1]"    30;   // J6-13
+IO_LOC "adc_d[2]"    29;   // J6-12
+IO_LOC "adc_d[3]"    26;   // J6-11  HDMI HPD 2.2k/5.1k divider (light load)
+IO_LOC "adc_d[4]"    25;   // J6-10
+IO_LOC "adc_d[5]"    28;   // J6-9
+IO_LOC "adc_d[6]"    27;   // J6-8
+IO_LOC "adc_clk"     16;   // J6-7   LED1 pin (output - LED glows)
+IO_LOC "adc_otr"     15;   // J6-6   LED0 pin (lit while OTR=0 - static, harmless)
+IO_LOC "adc_d[7]"    77;   // J6-5
+IO_LOC "adc_d[8]"    85;   // J6-4   microSD D1, 10k pull-up - SD slot EMPTY
+IO_LOC "adc_d[9]"    75;   // J6-3   BL616 SPI_MISO (BL616 only listens)
+IO_LOC "adc_d[10]"   74;   // J6-2
+IO_LOC "adc_d[11]"   73;   // J6-1
+IO_PORT "adc_clk"   IO_TYPE=LVCMOS33 DRIVE=8;
+IO_PORT "adc_d[0]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[1]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[2]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[3]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[4]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[5]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[6]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[7]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[8]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[9]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[10]" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[11]" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_otr"   IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+// UART to the PC through the onboard BL616 (FT2232-like, interface B)
+IO_LOC "uart_tx" 69;
+IO_PORT "uart_tx" IO_TYPE=LVCMOS33 DRIVE=8;
+IO_LOC "uart_rx" 70;
+IO_PORT "uart_rx" IO_TYPE=LVCMOS33 PULL_MODE=UP;

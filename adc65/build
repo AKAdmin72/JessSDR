@@ -1,0 +1,18 @@
+#!/bin/bash
+# Builds the 64.8 MSPS AD9226 + UART dump bitstream (headless Gowin EDA).
+set -e
+P="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IDE_DIR="$HOME/gowin_eda/IDE"
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libfreetype.so.6
+export LD_LIBRARY_PATH="$IDE_DIR/lib:$LD_LIBRARY_PATH"
+mkdir -p "$P/build_out"
+TCL="$P/build_out/adc65.tcl"
+{
+    echo "create_project -name adc65 -dir $P/build_out -pn GW2AR-LV18QN88C8/I7 -device_version C -force"
+    for f in adc65_top.v uart_tx.v uart_rx.v adc65.cst adc65.sdc; do echo "add_file $P/$f"; done
+    echo "set_option -top_module adc65_top"
+    echo "run all"
+} > "$TCL"
+"$IDE_DIR/bin/gw_sh" "$TCL"
+echo
+echo "Bitstream: $P/build_out/adc65/impl/pnr/adc65.fs"

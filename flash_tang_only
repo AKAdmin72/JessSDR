@@ -1,0 +1,9 @@
+#!/bin/bash
+# Restores the last hardware-verified Tang-only receiver (no ESP32 needed):
+# sdr v4 - ADC -> DDC -> SSB -> AGC -> onboard speaker amp, ILI9341 on the Tang.
+# Usage: ./flash_tang_only [sram]   (default: write to flash)
+set -e
+P="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FS="$P/releases/2026-11-07_tang-only_sdr-v4.fs"
+if [ "$1" = "sram" ]; then openFPGALoader -b tangnano20k "$FS"
+else openFPGALoader -b tangnano20k -f "$FS"; fi

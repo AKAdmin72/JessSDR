@@ -1,0 +1,15 @@
+# Gowin build output (re-created by ./build in each project folder)
+*/build_out/
+# iverilog binaries, dumps and screenshots made by the testbenches
+*/sim/*
+!*/sim/*.v
+!*/sim/*.py
+!*/sim/*.hex
+*.vcd
+__pycache__/
+# ESP-IDF output (re-created by esp32/build.sh)
+esp32/build/
+esp32/managed_components/
+esp32/sdkconfig.old
+# adc_test builds into adc_test/adc_test/ (older build script)
+adc_test/adc_test/

@@ -1,0 +1,59 @@
+// Tang Nano 20K - 40m SDR v1. ADC/TFT pins = ../adc_test/adc_test.cst
+IO_LOC "clk" 4;
+IO_PORT "clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_LOC "btn_s1" 88;
+IO_PORT "btn_s1" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC "btn_s2" 87;
+IO_PORT "btn_s2" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC "adc_d[0]"    31;   // J6-14
+IO_LOC "adc_d[1]"    30;   // J6-13
+IO_LOC "adc_d[2]"    29;   // J6-12
+IO_LOC "adc_d[3]"    26;   // J6-11  HDMI HPD 2.2k/5.1k divider (light load)
+IO_LOC "adc_d[4]"    25;   // J6-10
+IO_LOC "adc_d[5]"    28;   // J6-9
+IO_LOC "adc_d[6]"    27;   // J6-8
+IO_LOC "adc_clk"     16;   // J6-7   LED1 pin (output - LED glows)
+IO_LOC "adc_otr"     15;   // J6-6   LED0 pin (lit while OTR=0 - static, harmless)
+IO_LOC "adc_d[7]"    77;   // J6-5
+IO_LOC "adc_d[8]"    85;   // J6-4   microSD D1, 10k pull-up - SD slot EMPTY
+IO_LOC "adc_d[9]"    75;   // J6-3   BL616 SPI_MISO (BL616 only listens)
+IO_LOC "adc_d[10]"   74;   // J6-2
+IO_LOC "adc_d[11]"   73;   // J6-1
+IO_PORT "adc_clk"   IO_TYPE=LVCMOS33 DRIVE=8;
+IO_PORT "adc_d[0]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[1]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[2]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[3]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[4]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[5]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[6]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[7]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[8]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[9]"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[10]" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_d[11]" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_PORT "adc_otr"   IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_LOC "tft_cs"   71;   // J5-18 -> 3 CS
+IO_LOC "tft_rst"  18;   // J6-18 -> 4 RESET     (LED3 pin, flickers)
+IO_LOC "tft_dc"   19;   // J6-17 -> 5 D/C       (LED4)
+IO_LOC "tft_mosi" 20;   // J6-16 -> 6 SDI(MOSI) (LED5)
+IO_LOC "tft_sck"  17;   // J6-15 -> 7 SCK       (LED2)
+IO_PORT "tft_cs"   IO_TYPE=LVCMOS33 DRIVE=8 PULL_MODE=UP;
+IO_PORT "tft_rst"  IO_TYPE=LVCMOS33 DRIVE=8 PULL_MODE=UP;
+IO_PORT "tft_dc"   IO_TYPE=LVCMOS33 DRIVE=8;
+IO_PORT "tft_mosi" IO_TYPE=LVCMOS33 DRIVE=12;
+IO_PORT "tft_sck"  IO_TYPE=LVCMOS33 DRIVE=12;
+// UART to the PC (BL616)
+IO_LOC "uart_tx" 69;
+IO_PORT "uart_tx" IO_TYPE=LVCMOS33 DRIVE=8;
+IO_LOC "uart_rx" 70;
+IO_PORT "uart_rx" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+// Onboard MAX98357A (schematic sheet AUDIO): speaker on J4
+IO_LOC "i2s_bclk" 56;
+IO_PORT "i2s_bclk" IO_TYPE=LVCMOS33 DRIVE=8;
+IO_LOC "i2s_lrck" 55;
+IO_PORT "i2s_lrck" IO_TYPE=LVCMOS33 DRIVE=8;
+IO_LOC "i2s_din" 54;
+IO_PORT "i2s_din" IO_TYPE=LVCMOS33 DRIVE=8;
+IO_LOC "pa_en" 51;
+IO_PORT "pa_en" IO_TYPE=LVCMOS33 DRIVE=8;

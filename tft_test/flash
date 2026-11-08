@@ -1,0 +1,12 @@
+#!/bin/bash
+# Usage: ./flash bars | ./flash mandel [27|54|67]   - SRAM only (flash untouched)
+set -e
+P="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+case "${1:-mandel}" in
+    bars)   NAME=bars ;;
+    mandel) NAME=mandel${2:-54} ;;
+    *) echo "Usage: $0 bars | mandel [27|54|67]"; exit 1 ;;
+esac
+FS_FILE="$P/build_out/$NAME/impl/pnr/$NAME.fs"
+[ -f "$FS_FILE" ] || { echo "Bitstream not found: $FS_FILE - run ./build $*"; exit 1; }
+openFPGALoader -b tangnano20k "$FS_FILE"

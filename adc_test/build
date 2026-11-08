@@ -1,0 +1,10 @@
+#!/bin/bash
+# Builds the AD9226 test bitstream for Tang Nano 20K via headless Gowin EDA.
+set -e
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IDE_DIR="$HOME/gowin_eda/IDE"
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libfreetype.so.6
+export LD_LIBRARY_PATH="$IDE_DIR/lib:$LD_LIBRARY_PATH"
+"$IDE_DIR/bin/gw_sh" "$PROJECT_DIR/build.tcl"
+echo
+echo "Bitstream: $PROJECT_DIR/adc_test/impl/pnr/adc_test.fs"
