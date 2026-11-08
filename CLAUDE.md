@@ -11,6 +11,12 @@ tb blocking drives). Reused modules are copied verbatim from
 `../oscilloscope/` (trigger, ring_buffer, waveform_draw, waveform_framebuffer,
 line_draw, ili9341_driver) — don't "improve" them casually, they're proven.
 
+## Git / releases
+Git repo since 2026-11-08 (branch `main`). Hardware-verified builds go to
+`releases/` (+ README table, sha256) with a tag `working-YYYY-MM-DD`, same
+scheme as ../FpgaRX-SDR. Tang-only receiver (no ESP32): tag
+`working-2026-11-07` / branch `tang-only`, `./flash_tang_only [sram]`.
+
 ## Board: Tang Nano 20K (NOT 9K)
 - Part `GW2AR-LV18QN88C8/I7`, `-device_version C`; 27 MHz clock on pin 4.
 - Flash with `openFPGALoader -b tangnano20k` (`./flash`, `./flash flash`).
