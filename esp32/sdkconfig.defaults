@@ -11,3 +11,6 @@ CONFIG_ESPTOOLPY_MONITOR_BAUD=115200
 # GPIO20 (USB D+) is the FPGA SPI CS: no USB-Serial-JTAG console, the
 # console and flashing use the COM port (CH343, GPIO43/44)
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+# speed (as ../../../eps32/tft_4inch): -O2, 1 ms tick
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_FREERTOS_HZ=1000

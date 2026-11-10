@@ -116,6 +116,26 @@ the same integrators, R2=614 -> 105.54 kHz, own 66-bit combs, >>43; spectrum
 register cut the font path (Fmax 69.7 -> 78.9). tb_ddc_wide (+20k/+5k tones),
 tb_spectrum, tb_sdr_top (+10 kHz tone on the tick) ok. BSRAM 41/46.
 v4 written to flash 2026-11-07.
+`sdr_esp/` = SDR v5 for the ESP32-S3 UI (2026-11-10, PLAN.md phase 3 steps
+3-6; builds + sims pass, NOT yet hardware-tested). No TFT/FFT/waterfall/
+buttons on the Tang (pin 71 = ESP MISO). Shared DSP files stay in ../sdr
+(build adds them from there, copies nco_sin.hex). New: spi_regs.v (FpgaRX
+copy + VERSION param 5 + 0x15 LEVEL; FREQ BCD -> binary in the top, LO_FW =
+64.8 MHz phase_inc = (f*69500145)>>20, LO_SHIFT/IQC = 0), i2s_link_clk.v
+(BCK = clk*64/614 fractional, 4/5-clk halves, frame = exactly 614 clk = ddc
+wide rate) + iq_i2s_tx.v (FpgaRX verbatim) on the wide I/Q, DATA 2 clk after
+the BCK fall; am_demod.v + audio_nr.v (FpgaRX verbatim; AM = MODE 2/3 on
+ssb_demod's dec I/Q, NR after AGC). PEAK = max|code-2048|>>3 per 2^24 clk,
+OTR -> 255. UART subset ?/f/m/q/a + 'v' (wide I/Q dump). Fmax 81.8, BSRAM
+18/46, DSP 8/24. tbs: sim/tb_spi_regs, tb_i2s_link, tb_am_demod,
+tb_audio_nr, tb_sdr_esp_top (~10 min). ESP fpga.c expected LO_FW updated.
+Flashed (both) 2026-11-10, ESP self-test all PASS. Later same day: Tang S1/S2
+= encoder stand-in (buttons.v -> spi_regs 0x16 BTN, 2-bit short/long counters,
+ESP main.c tang_buttons() polls 30 ms: S1 short/long = NEXT/SELECT, S2 short =
+PREV, S2 long = menu/BACK; tb_buttons). WS2812 on pin 79 (= MOSI): fpga.c sends
+a black WS2812 frame (CS-less 2.5 MHz device) after each SPI txn. ESP TFT now
+80 MHz SPI + 40-line DMA ring (lcd.c from ../../eps32/tft_4inch), -O2, 1 kHz
+tick: 19 -> 35 FPS.
 `esp32/` = Phase 3 UI (ESP32-S3 + 4" ST7796S 480x320), ported from
 ../FpgaRX-SDR/esp32: `./build.sh`, `./flash.sh [monitor]`. Status in PLAN.md.
 ESP pins revised 2026-11-08 from Screenshots/photo_2026-11-08_22-27-08.jpg

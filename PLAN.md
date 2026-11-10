@@ -108,4 +108,11 @@ Steps (each one leaves a working receiver; check the noise floor after 4):
    ESP. Compare the noise floor with and without the ESP running.
 5. FPGA clean-up: drop TFT/FFT/waterfall/floor_eq, record freed BSRAM.
 6. NR/ANF: port ../FpgaRX-SDR/stage1/audio_nr.v (menu Audio > NR/Level).
-7. Later: filter width, CW, AM, USB audio + CAT (WSJT-X), Wi-Fi.
+7. Later: filter width, CW, USB audio + CAT (WSJT-X), Wi-Fi.
+
+Status 2026-11-10: steps 3-6 written as `sdr_esp/` (new top, the Tang-only
+`sdr/` stays as it is): spi_regs + BCD tuning, I2S I/Q link (105.54 kHz,
+BCK 6.75 MHz), TFT/FFT/waterfall/floor_eq dropped (BSRAM 41 -> 18/46),
+audio_nr + am_demod added. All tbs pass, Gowin build clean (Fmax 81.8 MHz).
+Next: flash both, check the ESP boot self-test log (SPI/LO/modes/I2S PASS),
+then the noise floor with/without the ESP.

@@ -239,6 +239,29 @@ static state_t state = ST_MAIN;
 static const menu_t *cur_menu = &menu_main;
 static int cursor;
 
+// Tang buttons S1/S2 as a stand-in for the encoder (sdr_esp buttons.v):
+// the FPGA counts short/long presses (2-bit counters), polled every 30ms.
+//   S1 short = NEXT (tune up / move down)   S1 long = SELECT (next step / enter)
+//   S2 short = PREV (tune down / move up)   S2 long = menu on the main screen, else BACK
+static input_ev_t tang_buttons(int64_t now)
+{
+    static int64_t t_poll;
+    static uint8_t last;
+    static bool have;
+    static input_ev_t pend[12];
+    static int np;
+    if (np) return pend[--np];
+    if (now - t_poll < 30000) return EV_NONE;
+    t_poll = now;
+    uint8_t b = fpga_read(FPGA_REG_BTN);
+    if (!have) { last = b; have = true; return EV_NONE; }
+    const input_ev_t map[4] = { EV_NEXT, EV_SELECT, EV_PREV, state == ST_MAIN ? EV_HOLD : EV_BACK };
+    for (int i = 3; i >= 0; i--)
+        for (int d = ((b >> (2 * i)) - (last >> (2 * i))) & 3; d > 0; d--) pend[np++] = map[i];
+    last = b;
+    return np ? pend[--np] : EV_NONE;
+}
+
 static void draw_title(const char *title)
 {
     lcd_fill(0, AREA_Y, LCD_W, ROW_H, C_TITLE_BG);
@@ -304,6 +327,7 @@ static void spi_test_enter(void)
 
 static void spi_test_step(void)
 {
+    fpga_led_hold(true);
     uint8_t id = fpga_read(FPGA_REG_ID), ver = fpga_read(FPGA_REG_VERSION);
     for (int k = 0; k < 200; k++) {
         uint8_t v = esp_random();
@@ -311,6 +335,7 @@ static void spi_test_step(void)
         if (fpga_read(FPGA_REG_SCRATCH) == v) spi_ok++;
         else spi_err++;
     }
+    fpga_led_hold(false);
     float secs = (esp_timer_get_time() - spi_t0) / 1e6f;
     char s[24];
     snprintf(s, sizeof(s), "0x%02X", id);
@@ -374,6 +399,7 @@ static void i2s_test_step(void)
 // ---------------------------------------------------------------------------
 static void link_selftest(void)
 {
+    fpga_led_hold(true);
     uint8_t id = fpga_read(FPGA_REG_ID), ver = fpga_read(FPGA_REG_VERSION);
     int err = 0;
     for (int k = 0; k < 1000; k++) {
@@ -435,6 +461,7 @@ static void link_selftest(void)
              (unsigned long)s.pattern_err, (unsigned long)s.count_jumps,
              (unsigned long)s.last_left, (unsigned long)s.last_right,
              (i2s_rate_ok(rate) && !s.pattern_err && !s.count_jumps) ? "PASS" : "FAIL");
+    fpga_led_hold(false);
 }
 
 // The board's RGB LED is on GPIO48 (checked 2026-10-19); keep it dark.
@@ -597,6 +624,7 @@ void app_main(void)
     while (1) {
         input_ev_t ev = input_get();
         int64_t now = esp_timer_get_time();
+        if (ev == EV_NONE && fpga_present) ev = tang_buttons(now);
 
         // save the dial 2s after the last change (spares the flash while turning)
         if (nvs_dirty && now - t_last_tune > 2000000) {
@@ -606,6 +634,7 @@ void app_main(void)
         // once a second: if the FPGA was restarted it lost the dial - resend
         if (fpga_present && now - t_check > 1000000 && state != ST_TEST_SPI) {
             t_check = now;
+            fpga_led_hold(true);
             if (fpga_get_freq() != dial_hz) {
                 ESP_LOGW(TAG, "FPGA dial differs (restarted?) - resending %lu Hz", (unsigned long)dial_hz);
                 fpga_set_freq(dial_hz);
@@ -623,6 +652,7 @@ void app_main(void)
                 ESP_LOGW(TAG, "FPGA mode differs (restarted?) - resending %s", mode_name[cur_mode]);
                 fpga_write(FPGA_REG_MODE, cur_mode);
             }
+            fpga_led_hold(false);
         }
 
         switch (state) {

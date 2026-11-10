@@ -7,7 +7,8 @@
 
 #define LCD_W        480
 #define LCD_H        320
-#define LCD_CHUNK    20                      // lines per DMA buffer
+#define LCD_CHUNK    40                      // lines per DMA buffer
+#define LCD_NBUF     2                       // DMA buffers in the ring
 
 // ST7796 wants big-endian RGB565; esp_lcd sends the buffer bytes as is.
 #define RGB565_(v)    ((uint16_t)(((v) >> 8) | ((v) << 8)))
@@ -17,6 +18,8 @@ void      lcd_init(void);
 void      lcd_backlight(int percent);
 uint16_t *lcd_buf_get(void);                 // waits for a free buffer
 void      lcd_buf_send(int x, int y, int w, int h);  // sends the last buffer got
+// Sends a given buffer; buffers must be sent in the order they were got.
+void      lcd_buf_send_buf(const uint16_t *b, int x, int y, int w, int h);
 void      lcd_fill(int x, int y, int w, int h, uint16_t c);
 // Text on a solid background; returns the width drawn.
 int       lcd_text(int x, int y, const font_t *f, const char *s, uint16_t fg, uint16_t bg);

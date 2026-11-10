@@ -24,7 +24,7 @@ static const char *TAG = "lcd";
 #define PIN_LCD_LED   16
 
 #define LCD_HOST      SPI2_HOST
-#define LCD_PCLK_HZ   (40 * 1000 * 1000)    // GPIO-matrix limit; try 27MHz if the picture breaks up
+#define LCD_PCLK_HZ   (80 * 1000 * 1000)    // 80 MHz / n: 80, 40, 26.7. Tang tft_test ran this panel at 54-67 MHz
 
 // MADCTL bits: MY 0x80, MX 0x40, MV 0x20 (swap x/y = landscape), BGR 0x08.
 // MV|MX|MY|BGR = the same landscape as the ILI9341 build (header on the
@@ -34,7 +34,7 @@ static const char *TAG = "lcd";
 
 static esp_lcd_panel_io_handle_t io;
 static SemaphoreHandle_t free_bufs;          // counts buffers not in flight
-static uint16_t *bufs[2];
+static uint16_t *bufs[LCD_NBUF];             // ring, sent in the order got
 static int cur;                              // buffer handed out by lcd_buf_get
 static uint8_t madctl = MADCTL_DEFAULT;
 static int invert = INVERT_DEFAULT;
@@ -54,19 +54,21 @@ static void cmd(uint8_t c, const uint8_t *p, int n)
 uint16_t *lcd_buf_get(void)
 {
     xSemaphoreTake(free_bufs, portMAX_DELAY);
-    cur ^= 1;
+    cur = (cur + 1) % LCD_NBUF;
     return bufs[cur];
 }
 
 // CASET/RASET wait for the queued colour transfers (esp_lcd does that in
 // tx_param), then RAMWR goes out by DMA and frees the buffer when done.
-void lcd_buf_send(int x, int y, int w, int h)
+void lcd_buf_send_buf(const uint16_t *b, int x, int y, int w, int h)
 {
     int x1 = x + w - 1, y1 = y + h - 1;
     cmd(0x2A, (uint8_t[]){ x >> 8, x, x1 >> 8, x1 }, 4);
     cmd(0x2B, (uint8_t[]){ y >> 8, y, y1 >> 8, y1 }, 4);
-    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_color(io, 0x2C, bufs[cur], w * h * sizeof(uint16_t)));
+    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_color(io, 0x2C, b, w * h * sizeof(uint16_t)));
 }
+
+void lcd_buf_send(int x, int y, int w, int h) { lcd_buf_send_buf(bufs[cur], x, y, w, h); }
 
 void lcd_fill(int x, int y, int w, int h, uint16_t c)
 {
@@ -150,8 +152,8 @@ static void st7796_init(void)
 
 void lcd_init(void)
 {
-    free_bufs = xSemaphoreCreateCounting(2, 2);
-    for (int i = 0; i < 2; i++) {
+    free_bufs = xSemaphoreCreateCounting(LCD_NBUF, LCD_NBUF);
+    for (int i = 0; i < LCD_NBUF; i++) {
         bufs[i] = heap_caps_malloc(LCD_W * LCD_CHUNK * sizeof(uint16_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
         assert(bufs[i]);
     }
@@ -183,7 +185,7 @@ void lcd_init(void)
         .sclk_io_num = PIN_LCD_SCK,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = LCD_W * LCD_CHUNK * sizeof(uint16_t),
+        .max_transfer_sz = LCD_W * 20 * sizeof(uint16_t),  // S3 DMA max is 32 KB; esp_lcd splits a buffer
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &bus, SPI_DMA_CH_AUTO));
 
@@ -192,7 +194,7 @@ void lcd_init(void)
         .dc_gpio_num = PIN_LCD_DC,
         .spi_mode = 0,
         .pclk_hz = LCD_PCLK_HZ,
-        .trans_queue_depth = 4,
+        .trans_queue_depth = 2 * LCD_NBUF,
         .on_color_trans_done = on_trans_done,
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,

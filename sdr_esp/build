@@ -1,0 +1,29 @@
+#!/bin/bash
+# Builds the ESP-linked 40m SDR (headless Gowin EDA). The DSP modules shared
+# with the Tang-only receiver stay in ../sdr (single copy); nco_sin.hex is
+# copied here because ddc.v's $readmemh reads it from the run directory.
+set -e
+P="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+S="$P/../sdr"
+IDE_DIR="$HOME/gowin_eda/IDE"
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libfreetype.so.6
+export LD_LIBRARY_PATH="$IDE_DIR/lib:$LD_LIBRARY_PATH"
+cp "$S/nco_sin.hex" "$P/"
+mkdir -p "$P/build_out"
+TCL="$P/build_out/sdr_esp.tcl"
+{
+    echo "create_project -name sdr_esp -dir $P/build_out -pn GW2AR-LV18QN88C8/I7 -device_version C -force"
+    for f in sdr_esp_top.v buttons.v spi_regs.v i2s_link_clk.v iq_i2s_tx.v am_demod.v audio_nr.v sdr_esp.cst sdr_esp.sdc; do
+        echo "add_file $P/$f"
+    done
+    for f in ddc.v ssb_demod.v audio_agc.v audio_i2s.v level_meter.v uart_tx.v uart_rx.v; do
+        echo "add_file $S/$f"
+    done
+    echo "set_option -top_module sdr_esp_top"
+    echo "set_option -use_sspi_as_gpio 1"   # pins 54-56 (onboard I2S amp) are SSPI dual-purpose
+    echo "run all"
+} > "$TCL"
+cd "$P"
+"$IDE_DIR/bin/gw_sh" "$TCL"
+echo
+echo "Bitstream: $P/build_out/sdr_esp/impl/pnr/sdr_esp.fs"

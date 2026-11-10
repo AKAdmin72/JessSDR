@@ -7,6 +7,7 @@
 #include "esp_timer.h"
 #include "driver/spi_master.h"
 #include "driver/i2s_std.h"
+#include "esp_heap_caps.h"
 #include "fpga.h"
 
 static const char *TAG = "fpga";
@@ -24,13 +25,46 @@ static const char *TAG = "fpga";
 #define I2S_BLOCK     1024            // frames per read
 
 static spi_device_handle_t spi;
+static spi_device_handle_t led;        // no CS: MOSI only, the FPGA ignores it (CS high)
+
+// Tang pin 79 (our MOSI) is also the DIN of the board's WS2812 RGB LED, so
+// the register traffic sets it to random (mostly bright) colours. After
+// every transaction a "black" WS2812 frame follows on MOSI, sent through a
+// second, CS-less device at 2.5MHz (0.4us per SPI bit): reset (>= 280us
+// low), 24 "0" bits as 100 patterns (0.4us high, 0.8us low), reset again so
+// it latches. The garbage colour lives ~0.3ms per transaction.
+#define LED_RST_BYTES 96               // 96 * 3.2us = 307us low
+static uint8_t *led_frame;             // DMA-capable
+static int led_len;
+static int led_hold;                   // > 0: bursts, black once at the end
+static bool led_dirty;
+
+static void led_black(void)
+{
+    if (led_hold) { led_dirty = true; return; }
+    spi_transaction_t t = { .length = 8 * led_len, .tx_buffer = led_frame };
+    ESP_ERROR_CHECK(spi_device_polling_transmit(led, &t));
+    led_dirty = false;
+}
+
+void fpga_led_hold(bool on)
+{
+    if (on) led_hold++;
+    else if (led_hold > 0 && --led_hold == 0 && led_dirty) led_black();
+}
+
+static void xfer(spi_transaction_t *t)
+{
+    ESP_ERROR_CHECK(spi_device_polling_transmit(spi, t));
+    led_black();
+}
 static i2s_chan_handle_t rx;
 
 uint8_t fpga_read(uint8_t addr)
 {
     uint8_t tx[2] = { 0x80 | addr, 0 }, rxb[2] = { 0 };
     spi_transaction_t t = { .length = 16, .tx_buffer = tx, .rx_buffer = rxb };
-    ESP_ERROR_CHECK(spi_device_polling_transmit(spi, &t));
+    xfer(&t);
     return rxb[1];
 }
 
@@ -38,14 +72,14 @@ void fpga_write(uint8_t addr, uint8_t val)
 {
     uint8_t tx[2] = { addr & 0x7F, val };
     spi_transaction_t t = { .length = 16, .tx_buffer = tx };
-    ESP_ERROR_CHECK(spi_device_polling_transmit(spi, &t));
+    xfer(&t);
 }
 
 uint32_t fpga_read_u32(uint8_t addr)
 {
     uint8_t tx[5] = { 0x80 | addr }, rxb[5] = { 0 };
     spi_transaction_t t = { .length = 40, .tx_buffer = tx, .rx_buffer = rxb };
-    ESP_ERROR_CHECK(spi_device_polling_transmit(spi, &t));
+    xfer(&t);
     return (uint32_t)rxb[1] << 24 | (uint32_t)rxb[2] << 16 | (uint32_t)rxb[3] << 8 | rxb[4];
 }
 
@@ -56,7 +90,7 @@ void fpga_set_freq(uint32_t hz)
     // one burst: the FPGA latches all four bytes when the last one arrives
     uint8_t tx[5] = { FPGA_REG_FREQ, bcd >> 24, bcd >> 16, bcd >> 8, bcd };
     spi_transaction_t t = { .length = 40, .tx_buffer = tx };
-    ESP_ERROR_CHECK(spi_device_polling_transmit(spi, &t));
+    xfer(&t);
 }
 
 uint32_t fpga_get_freq(void)
@@ -74,9 +108,10 @@ int fpga_mode_k(int mode)
 
 uint32_t fpga_expected_lo_fw(uint32_t hz, int k)
 {
-    // fw = f * 2^32 / 162MHz, plus K * 2^32 * (fs/16) / 162MHz (stage1_top.v
-    // offset_fw = 87381*K + K/3, mod 2^32 for K < 0)
-    return (uint32_t)llround((double)hz * 4294967296.0 / 162e6) + (uint32_t)(87381 * k + k / 3);
+    // sdr_esp_top.v: 64.8MHz NCO, fw = (f * 69500145) >> 20 (~ f * 2^32 / 64.8MHz);
+    // no low-IF offset (K = 0)
+    (void)k;
+    return (uint32_t)(((uint64_t)hz * 69500145u) >> 20);
 }
 
 // ---- I2S receive task ----
@@ -179,9 +214,9 @@ void fpga_init(void)
         .sclk_io_num = PIN_SPI_SCK,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = 64,
+        .max_transfer_sz = 256,
     };
-    ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &bus, SPI_DMA_DISABLED));
+    ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &bus, SPI_DMA_CH_AUTO));
     spi_device_interface_config_t dev = {
         .clock_speed_hz = SPI_HZ,
         .mode = 0,
@@ -189,6 +224,18 @@ void fpga_init(void)
         .queue_size = 2,
     };
     ESP_ERROR_CHECK(spi_bus_add_device(SPI3_HOST, &dev, &spi));
+    spi_device_interface_config_t ldev = {
+        .clock_speed_hz = 2500 * 1000,
+        .mode = 0,
+        .spics_io_num = -1,
+        .queue_size = 1,
+    };
+    ESP_ERROR_CHECK(spi_bus_add_device(SPI3_HOST, &ldev, &led));
+    static const uint8_t black[9] = { 0x92, 0x49, 0x24, 0x92, 0x49, 0x24, 0x92, 0x49, 0x24 };
+    led_len = 2 * LED_RST_BYTES + sizeof(black);
+    led_frame = heap_caps_calloc(1, led_len, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    memcpy(led_frame + LED_RST_BYTES, black, sizeof(black));
+    led_black();
 
     i2s_chan_config_t chan = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_SLAVE);
     chan.dma_desc_num = 8;
