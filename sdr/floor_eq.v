@@ -1,5 +1,5 @@
 // Automatic noise floor: per-bin flattening of the spectrum line, adapted
-// from ../FpgaRX-SDR/stage1/spectrum_eq.v (same algorithm; 9-bit L8 levels,
+// from ../tang_nano_9k_projects/FpgaRX-SDR/stage1/spectrum_eq.v (same algorithm; 9-bit L8 levels,
 // 320 columns in display order, runs once per averaged line ~12/s).
 //
 // 1. Per-bin floor estimate est[x] (9.8 fixed point): L < est -> est = L

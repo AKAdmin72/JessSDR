@@ -16,3 +16,6 @@ adc_test/adc_test/
 # sdr_esp: copied from ../sdr by ./build
 sdr_esp/nco_sin.hex
 sdr_esp/build_out.log
+# splash variants (re-created by esp32/tools/gen_splash.py sheet)
+esp32/tools/splash_v*.png
+esp32/tools/splash_sheet.png

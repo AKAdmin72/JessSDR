@@ -29,7 +29,7 @@ static const char *TAG = "lcd";
 // MADCTL bits: MY 0x80, MX 0x40, MV 0x20 (swap x/y = landscape), BGR 0x08.
 // MV|MX|MY|BGR = the same landscape as the ILI9341 build (header on the
 // left). Unchecked on this panel - the console "lcd m <hex>" tries others.
-#define MADCTL_DEFAULT 0xE8
+#define MADCTL_DEFAULT 0x28       // 2026-11-10: 0xE8 was upside down on the board -> MX, MY flipped (180 deg)
 #define INVERT_DEFAULT 0          // some ST7796 modules need INVON (0x21)
 
 static esp_lcd_panel_io_handle_t io;

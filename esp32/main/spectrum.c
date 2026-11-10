@@ -1,5 +1,5 @@
 // Main screen: header, ruler, spectrum and waterfall (PLAN.md Phase 3),
-// ported from ../FpgaRX-SDR to the 480x320 ST7796S.
+// ported from ../tang_nano_9k_projects/FpgaRX-SDR to the 480x320 ST7796S.
 //
 //   y   0..47   header: dial frequency, mode/step, ADC/speed readout
 //   y  48..65   frequency ruler (absolute kHz)
@@ -371,7 +371,7 @@ static void draw_mode(void)
 static void draw_speed(float fps);
 static bool show_fps;   // menu: FPS (off by default)
 static float last_fps;
-static struct { bool clip; float pk_db; } adc_st;
+static struct { bool clip; float pk_db; } adc_st = { false, -100.0f };   // no peak until the FPGA reports one
 static char speed_shown[7];   // what the slot holds now ("" = redraw)
 static void draw_header(void)
 {

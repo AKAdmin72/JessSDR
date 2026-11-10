@@ -1,6 +1,6 @@
 // SPI slave register file: the ESP32-S3 (SPI master, mode 0, MSB first)
-// controls the FPGA through it. Copied from ../FpgaRX-SDR/stage1/spi_regs.v;
-// changes for tang20k_adc_9226/sdr_esp: VERSION is a parameter, register
+// controls the FPGA through it. Copied from ../tang_nano_9k_projects/FpgaRX-SDR/stage1/spi_regs.v;
+// changes for JessSDR sdr_esp/: VERSION is a parameter, register
 // 0x15 LEVEL and 0x16 BTN added, and clk is the 64.8 MHz DSP clock (sdr_esp_top.v ties
 // IQC_* to 0 and LO_SHIFT_K to 0 - the DDC is centred on the dial; LO_FW =
 // the 64.8 MHz NCO phase increment).

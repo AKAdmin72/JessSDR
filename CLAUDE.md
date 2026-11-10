@@ -1,27 +1,37 @@
-# tang20k_adc_9226 — notes for Claude
+# JessSDR — notes for Claude
+
+Project renamed 2026-11-10 from `tang20k_adc_9226` (after Jessica, the
+user's cat) and moved from `~/Development/tang_nano_9k_projects/` to
+`~/Development/JessSDR`; sibling projects are now under
+`../tang_nano_9k_projects/`. Boot splash: `esp32/tools/gen_splash.py N`
+(her real face, `esp32/tools/jessica_cutout.png` cut from a photo with
+cv2.grabCut - drawn cats never looked like her; style 1 = photo chosen,
+2-5 = cartoon/oil/pencil/pixel) -> `esp32/main/splash_img.h` (palette +
+RLE, ~83 KB), shown by splash.c during the link self-test (>= 2.5 s).
+Display turned 180 deg 2026-11-10: MADCTL 0x28 (was 0xE8).
 
 Goal: Sipeed Tang Nano 20K + AD9226 ADC module (+ ILI9341 TFT). Phase 1 =
 ADC bring-up/tests (`adc_test/`), phase 2 = 40m (7.0–7.2 MHz) direct-sampling
 SDR. See `PLAN.md`.
 
-All Verilog/Gowin conventions from `../FpgaRX-SDR/CLAUDE.md` apply here
+All Verilog/Gowin conventions from `../tang_nano_9k_projects/FpgaRX-SDR/CLAUDE.md` apply here
 (one `always` per reg, no reset network, single-cycle pulses, BSRAM
 inference pattern, signed-concat pitfall, iverilog tb per module, `#1` in
 tb blocking drives). Reused modules are copied verbatim from
-`../oscilloscope/` (trigger, ring_buffer, waveform_draw, waveform_framebuffer,
+`../tang_nano_9k_projects/oscilloscope/` (trigger, ring_buffer, waveform_draw, waveform_framebuffer,
 line_draw, ili9341_driver) — don't "improve" them casually, they're proven.
 
 ## Git / releases
 Git repo since 2026-11-08 (branch `main`). Hardware-verified builds go to
 `releases/` (+ README table, sha256) with a tag `working-YYYY-MM-DD`, same
-scheme as ../FpgaRX-SDR. Tang-only receiver (no ESP32): tag
+scheme as ../tang_nano_9k_projects/FpgaRX-SDR. Tang-only receiver (no ESP32): tag
 `working-2026-11-07` / branch `tang-only`, `./flash_tang_only [sram]`.
 
 ## Board: Tang Nano 20K (NOT 9K)
 - Part `GW2AR-LV18QN88C8/I7`, `-device_version C`; 27 MHz clock on pin 4.
 - Flash with `openFPGALoader -b tangnano20k` (`./flash`, `./flash flash`).
 - UART to PC: FPGA pins 69 (TX) / 70 (RX) via the onboard BL616; the
-  udev rule unbinds ftdi_sio, so use `../term.py` (libftdi, interface B).
+  udev rule unbinds ftdi_sio, so use `../tang_nano_9k_projects/term.py` (libftdi, interface B).
 - Buttons S1=88, S2=87 are active-HIGH.
 - Official schematic: `docs/Tang_Nano_20K_3923_Schematics.pdf` (sheet 1 has
   headers J5/J6). Pin choice rules and every excluded pin are documented in
@@ -80,7 +90,7 @@ input, FS ~+24 dBm). NanoVNA output is a square wave (SINAD ~6.3 dB is just
 its harmonics) - use CW mode, not sweep, for SNR.
 `sdr/` = 40m SDR v1 (2026-11-03, works on hardware): ddc.v (NCO 4096x16
 BSRAM ROM nco_sin.hex, I=x*cos Q=-x*sin, CIC4 R=1229 -> 52.726 kHz, >>47)
--> ssb_demod.v + audio_agc.v copied verbatim from ../FpgaRX-SDR/stage1 (built
+-> ssb_demod.v + audio_agc.v copied verbatim from ../tang_nano_9k_projects/FpgaRX-SDR/stage1 (built
 for 52.734 kHz) -> audio_i2s.v (linear interp to 48.214 kHz, BCLK clk/21) ->
 onboard MAX98357A (pins 56 BCLK/55 LRCK/54 DIN/51 PA_EN; needs
 `set_option -use_sspi_as_gpio 1`). USB = negate Q. level_meter (pipelined -
@@ -134,10 +144,10 @@ Flashed (both) 2026-11-10, ESP self-test all PASS. Later same day: Tang S1/S2
 ESP main.c tang_buttons() polls 30 ms: S1 short/long = NEXT/SELECT, S2 short =
 PREV, S2 long = menu/BACK; tb_buttons). WS2812 on pin 79 (= MOSI): fpga.c sends
 a black WS2812 frame (CS-less 2.5 MHz device) after each SPI txn. ESP TFT now
-80 MHz SPI + 40-line DMA ring (lcd.c from ../../eps32/tft_4inch), -O2, 1 kHz
+80 MHz SPI + 40-line DMA ring (lcd.c from ../eps32/tft_4inch), -O2, 1 kHz
 tick: 19 -> 35 FPS.
 `esp32/` = Phase 3 UI (ESP32-S3 + 4" ST7796S 480x320), ported from
-../FpgaRX-SDR/esp32: `./build.sh`, `./flash.sh [monitor]`. Status in PLAN.md.
+../tang_nano_9k_projects/FpgaRX-SDR/esp32: `./build.sh`, `./flash.sh [monitor]`. Status in PLAN.md.
 ESP pins revised 2026-11-08 from Screenshots/photo_2026-11-08_22-27-08.jpg
 (perfboard: ESP32-S3-DevKitC **N16R8** left of the Tang, both antenna/HDMI
 up): link on ESP right row J3, J5-n opposite J3-(23-n) -> straight jumpers
@@ -148,7 +158,7 @@ GND - never bridge). TFT on left row J1: CS/RST/DC/MOSI/SCK/LED =
 console moved from USB-Serial-JTAG to UART0 (COM port). 86/G38 avoided
 (86 = BL616 IO0). sdkconfig = N16R8 (octal PSRAM 8MB AP_3v3, 16MB flash).
 Flashed 2026-11-08 via COM (CH343 1a86:55d3, /dev/ttyACM0): boots, SIM 16 FPS,
-console OK; user confirmed the picture (MADCTL E8, invert 0). hardware/system draws ESP|Tang side by side with real wires.
+console OK; user confirmed the picture (MADCTL E8, invert 0; now 0x28, see top). hardware/system draws ESP|Tang side by side with real wires.
 ```
 cd adc_test && ./build && ./flash
 iverilog -g2012 -o sim/tb_adc_capture sim/tb_adc_capture.v adc_capture.v && vvp sim/tb_adc_capture

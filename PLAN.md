@@ -1,4 +1,4 @@
-# Plan
+# JessSDR — plan
 
 ## Phase 1 — ADC tests (`adc_test/`)
 1. [done] Pinout for 20K, KiCad wiring schematic, scope bitstream builds:
@@ -17,7 +17,7 @@ Front end: PicoRX LPF + LTC6226 (+15 dB), optionally the AD8138 gain mod on
 the module; spare LNA as reserve. FPGA: NCO + I/Q mixer at ~7.1 MHz →
 CIC decimation → FIR → SSB demod → onboard I2S amplifier (pins 54/55/56/51)
 → speaker; spectrum/waterfall on TFT; encoder on the ESP32-S3. Reuse DSP
-blocks from ../FpgaRX-SDR where they fit.
+blocks from ../tang_nano_9k_projects/FpgaRX-SDR where they fit.
 
 ## Wiring (Tang Nano 20K header pin → device)
 Perfboard layout (chosen for the shortest wires):
@@ -67,7 +67,7 @@ GPIO20 = native USB D+ -> the ESP console moved to the COM port (UART0).
 microSD slot must stay empty (ADC D8 and ESP BCK use SD lines).
 
 ## Phase 3 — ESP32-S3 UI (decided 2026-11-07)
-Same split as ../FpgaRX-SDR stage 4: the Tang keeps the whole radio path
+Same split as ../tang_nano_9k_projects/FpgaRX-SDR stage 4: the Tang keeps the whole radio path
 (ADC → DDC → SSB → NR/ANF → AGC → I2S amp); the ESP32-S3 does the display,
 encoder/buttons, menu (NVS), FFT spectrum + waterfall. Reason: FpgaRX's ESP
 spectrum/menu/NR were much nicer, and the Tang's BSRAM is 41/46 full mostly
@@ -107,7 +107,7 @@ Steps (each one leaves a working receiver; check the noise floor after 4):
 4. I/Q: iq_i2s_tx.v (105.54 kHz) + ESP I2S slave; spectrum/waterfall on the
    ESP. Compare the noise floor with and without the ESP running.
 5. FPGA clean-up: drop TFT/FFT/waterfall/floor_eq, record freed BSRAM.
-6. NR/ANF: port ../FpgaRX-SDR/stage1/audio_nr.v (menu Audio > NR/Level).
+6. NR/ANF: port ../tang_nano_9k_projects/FpgaRX-SDR/stage1/audio_nr.v (menu Audio > NR/Level).
 7. Later: filter width, CW, USB audio + CAT (WSJT-X), Wi-Fi.
 
 Status 2026-11-10: steps 3-6 written as `sdr_esp/` (new top, the Tang-only

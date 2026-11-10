@@ -1,5 +1,5 @@
-// 40m SDR UI firmware for ESP32-S3 + 4" ST7796S 480x320 (PLAN.md Phase 3),
-// ported from ../FpgaRX-SDR/esp32.
+// JessSDR: 40m SDR UI firmware for ESP32-S3 + 4" ST7796S 480x320 (PLAN.md Phase 3),
+// ported from ../tang_nano_9k_projects/FpgaRX-SDR/esp32.
 //
 // Screens: the main spectrum/waterfall screen, a menu tree, and the link
 // test screens in MENU > SYSTEM. Controls (input.h):
@@ -30,11 +30,12 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "lcd.h"
+#include "splash.h"
 #include "spectrum.h"
 #include "fpga.h"
 #include "input.h"
 
-static const char *TAG = "fpgarx";
+static const char *TAG = "jesssdr";   // (the NVS namespace stays "fpgarx": saved settings)
 
 #define C_BG       RGB565(0, 0, 0)
 #define C_PANEL    RGB565(10, 10, 30)
@@ -397,7 +398,7 @@ static void i2s_test_step(void)
 // ---------------------------------------------------------------------------
 // Power-up self-test (serial log only)
 // ---------------------------------------------------------------------------
-static void link_selftest(void)
+static bool link_selftest(void)   // true = all PASS
 {
     fpga_led_hold(true);
     uint8_t id = fpga_read(FPGA_REG_ID), ver = fpga_read(FPGA_REG_VERSION);
@@ -462,6 +463,8 @@ static void link_selftest(void)
              (unsigned long)s.last_left, (unsigned long)s.last_right,
              (i2s_rate_ok(rate) && !s.pattern_err && !s.count_jumps) ? "PASS" : "FAIL");
     fpga_led_hold(false);
+    return id == FPGA_ID && !err && !lo_err && !mode_err &&
+           i2s_rate_ok(rate) && !s.pattern_err && !s.count_jumps;
 }
 
 // The board's RGB LED is on GPIO48 (checked 2026-10-19); keep it dark.
@@ -598,24 +601,28 @@ void app_main(void)
     }
     dial_load();
     lcd_init();
-    lcd_fill(0, 0, LCD_W, LCD_H, C_BG);
+    splash_show();                     // Jessica, while the link self-test runs
     lcd_backlight(100);
+    int64_t t_splash = esp_timer_get_time();
     spectrum_init();
     spectrum_set_view(range_db[range_idx], win_hann);
-    spectrum_show_fps(fps_on);
     fpga_init();
     input_init();
     if (uart_driver_install(UART_NUM_0, 256, 4096, 0, NULL, 0) == ESP_OK) uart_vfs_dev_use_driver(UART_NUM_0);
     uint8_t id = fpga_read(FPGA_REG_ID);
     fpga_present = id == FPGA_ID;
     if (fpga_present) {
-        link_selftest();
+        link_selftest();                          // result in the serial log
         fpga_set_freq(dial_hz);
         fpga_write(FPGA_REG_CTRL, ctrl_base());
         fpga_write(FPGA_REG_NR, nr_reg());
     } else {
         ESP_LOGW(TAG, "no FPGA (ID read 0x%02X, want 0x%02X) - standalone, SIM source", id, FPGA_ID);
     }
+    int64_t shown = esp_timer_get_time() - t_splash;   // keep the splash up >= 2.5s
+    if (shown < 2500000) vTaskDelay(pdMS_TO_TICKS((2500000 - shown) / 1000));
+    lcd_fill(0, 0, LCD_W, LCD_H, C_BG);
+    spectrum_show_fps(fps_on);
     mode_apply(true);
     enter_main();
     ESP_LOGI(TAG, "dial %lu Hz, step %lu Hz", (unsigned long)dial_hz, (unsigned long)step_hz[step_idx]);
