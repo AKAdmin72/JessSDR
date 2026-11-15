@@ -50,6 +50,11 @@ module tb_sdr_esp_top;
               xfer(bcd[31:24], dmy); xfer(bcd[23:16], dmy); xfer(bcd[15:8], dmy); xfer(bcd[7:0], dmy);
               #HALF cs_n = 1; #(4*HALF); end
     endtask
+    task wr_cf(input [39:0] t);
+        begin cs_n = 0; #HALF; xfer(8'h1A, dmy);
+              xfer(t[39:32], dmy); xfer(t[31:24], dmy); xfer(t[23:16], dmy); xfer(t[15:8], dmy); xfer(t[7:0], dmy);
+              #HALF cs_n = 1; #(4*HALF); end
+    endtask
     task expect8(input [7:0] got, input [7:0] want, input [8*16-1:0] what);
         if (got !== want) begin $display("FAIL: %0s = %02h, expected %02h", what, got, want); errors = errors + 1; end
     endtask
@@ -96,21 +101,21 @@ module tb_sdr_esp_top;
         end
     endtask
 
-    // ---- audio after NR: zero crossings ----
+    // ---- played audio (NR + make-up AGC): zero crossings ----
     integer na = 0, zc = 0, amax = 0; reg signed [15:0] aprev = 0; reg acount = 0;
-    always @(posedge clk) if (dut.nr_v && acount) begin
+    always @(posedge clk) if (dut.aud_v && acount) begin
         na = na + 1;
-        if ((dut.nr_out >= 0) != (aprev >= 0)) zc = zc + 1;
-        if (dut.nr_out > amax) amax = dut.nr_out;
-        aprev = dut.nr_out;
+        if ((dut.aud_out >= 0) != (aprev >= 0)) zc = zc + 1;
+        if (dut.aud_out > amax) amax = dut.aud_out;
+        aprev = dut.aud_out;
     end
 
-    reg [7:0] v; reg [31:0] v32, want32;
+    reg [7:0] v; reg [31:0] v32, want32; reg [35:0] cf_orig;
     real pp, pn, fa;
     initial begin
         #2000;
         rd(7'h00, v); expect8(v, 8'h5A, "ID");
-        rd(7'h01, v); expect8(v, 8'h05, "VERSION");
+        rd(7'h01, v); expect8(v, 8'h06, "VERSION");
         wr(7'h02, 8'hA5); rd(7'h02, v); expect8(v, 8'hA5, "SCRATCH");
         // tune away and back: 14.074 MHz, then 7.100 MHz
         wr_freq(32'h14074000); #2000;
@@ -125,9 +130,20 @@ module tb_sdr_esp_top;
         wr(7'h0D, 8'h02); rd(7'h0D, v); expect8(v, 8'h02, "MODE AM");
         if (!dut.mode_am) begin $display("FAIL: AM not selected"); errors = errors + 1; end
         wr(7'h0D, 8'h00); expect8({6'd0, dut.mode}, 8'h00, "MODE LSB");
-        wr(7'h13, 8'h04); rd(7'h13, v); expect8(v, 8'h04, "NR");
-        if (dut.esp_nr !== 4'h4) begin $display("FAIL: NR not at audio_nr"); errors = errors + 1; end
+        wr(7'h13, 8'h05); rd(7'h13, v); expect8(v, 8'h05, "NR");   // NR on, e/8: audio via agc2
+        if (dut.esp_nr !== 4'h5) begin $display("FAIL: NR not at audio_nr"); errors = errors + 1; end
         wr(7'h13, 8'h00);
+        // VOL, AGC, a filter tap (rewritten with its own power-up value)
+        wr(7'h17, 8'h40); rd(7'h17, v); expect8(v, 8'h40, "VOL"); wr(7'h17, 8'h80);
+        wr(7'h18, 8'h02); rd(7'h18, v); expect8(v, 8'h02, "AGC");
+        if (dut.esp_agc !== 2'd2) begin $display("FAIL: AGC not at audio_agc"); errors = errors + 1; end
+        wr(7'h18, 8'h01);
+        cf_orig = dut.u_ssb.cf_mem[16];
+        wr(7'h19, 8'h10); wr_cf({4'h0, cf_orig ^ 36'h1});        // tap 16, lsb flipped
+        rd(7'h19, v); expect8(v, 8'h11, "CF_ADDR after write");
+        if (dut.u_ssb.cf_mem[16] !== (cf_orig ^ 36'h1)) begin $display("FAIL: CF tap 16 write"); errors = errors + 1; end
+        wr(7'h19, 8'h10); wr_cf({4'h0, cf_orig});                 // and back
+        if (dut.u_ssb.cf_mem[16] !== cf_orig) begin $display("FAIL: CF tap 16 restore"); errors = errors + 1; end
 
         // I2S test pattern
         wr(7'h03, 8'h01); #(30 * 9500); test_chk = 1; #(200 * 9476);

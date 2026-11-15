@@ -1,5 +1,5 @@
 // Tang Nano 20K - ILI9341 TFT wiring test. TFT pins identical to
-// ../adc_test/adc_test.cst (see there / hardware/wiring for the wiring).
+// ../adc_test/adc_test.cst (see there / hardware/jesssdr for the schematic).
 IO_LOC "clk" 4;
 IO_PORT "clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
 IO_LOC "btn_s1" 88;

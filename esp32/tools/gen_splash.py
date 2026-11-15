@@ -9,6 +9,10 @@ cv2.grabCut, eyes filled back in, only the cat kept), stylized five ways:
   3 oil      oil painting (cv2.xphoto.oilPainting)
   4 pencil   colour pencil sketch (cv2.pencilSketch)
   5 pixel    pixel art (1/5 resolution, 24 colours)
+  6 logo     tools/jessica_logo.png (2026-11-15, the user's drawn logo of her:
+             vector-style head with radio waves on cream), cut out onto the
+             dark background, contour + waves recoloured light blue (the user
+             did not like it on its cream) - chosen
 
 Usage:
   python3 esp32/tools/gen_splash.py sheet  -> esp32/tools/splash_v1..5.png + splash_sheet.png
@@ -25,7 +29,9 @@ W, H = 480, 320
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT_H = os.path.join(HERE, "..", "main", "splash_img.h")
 CUTOUT = os.path.join(HERE, "jessica_cutout.png")
-STYLES = {1: "photo", 2: "cartoon", 3: "oil", 4: "pencil", 5: "pixel"}
+STYLES = {1: "photo", 2: "cartoon", 3: "oil", 4: "pencil", 5: "pixel", 6: "logo"}
+LOGO = os.path.join(HERE, "jessica_logo.png")
+CREAM, NAVY, ORANGE = (253, 247, 241), (4, 27, 63), (245, 147, 71)
 BG0, BG1 = (0x0B, 0x14, 0x30), (0x1D, 0x2B, 0x5C)
 CAT_W, CAT_X, CAT_Y = 292, 2, 44           # placement of the cutout on the screen
 
@@ -159,7 +165,45 @@ def stylize(n, bgr):
     raise ValueError(n)
 
 
+def logo_rgba(light=(150, 220, 255)):
+    """jessica_logo.png -> RGBA for a dark background: the cream around her is
+    cut away (soft edge), and the navy strokes that touch it - outer contour
+    and the radio waves - become `light` (navy would vanish on dark blue).
+    Navy inside the face (eyes, nose, mouth) stays as drawn."""
+    im = cv2.imread(LOGO).astype(np.float32)                     # BGR
+    cream = np.array(CREAM[::-1], np.float32)
+    navy = np.array(NAVY[::-1], np.float32)
+    d_cream = np.linalg.norm(im - cream, axis=2)
+    near = (d_cream < 60).astype(np.uint8)
+    _, lab = cv2.connectedComponents(near, connectivity=4)
+    edge = np.unique(np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]]))
+    bg = np.isin(lab, [v for v in edge if v != 0])
+    band = cv2.dilate(bg.astype(np.uint8), np.ones((7, 7), np.uint8)).astype(bool)
+    a = np.ones(im.shape[:2], np.float32)
+    a[band] = np.clip(d_cream[band] / np.linalg.norm(navy - cream) * 1.15, 0, 1)
+    a[bg & (d_cream < 25)] = 0
+    col = im.copy()
+    col[band] = navy                                             # unmixed edge colour
+    w = np.clip(1 - np.linalg.norm(col - navy, axis=2) / 140.0, 0, 1)
+    _, sl = cv2.connectedComponents((w > 0.3).astype(np.uint8), connectivity=8)
+    outer = np.isin(sl, [v for v in np.unique(sl[band]) if v != 0])
+    outer = cv2.dilate(outer.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool) | band
+    w = (w * outer)[..., None]
+    col = col + w * (np.array(light[::-1], np.float32) - navy)
+    rgba = np.dstack([np.clip(col, 0, 255)[..., ::-1], a * 255]).astype(np.uint8)
+    return Image.fromarray(rgba, "RGBA")
+
+
+def render_logo():
+    side = 304
+    img = background(glow=True).convert("RGBA")
+    img.alpha_composite(logo_rgba().resize((side, side), Image.LANCZOS), (0, (H - side) // 2 - 4))
+    return title(img.convert("RGB"))
+
+
 def render(n):
+    if n == 6:
+        return render_logo()
     bgr, a = load_cutout()
     st = stylize(n, bgr)
     if n == 5:                                    # blocky alpha too

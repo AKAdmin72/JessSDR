@@ -7,12 +7,23 @@
 //     e      = x[n] - y                       prediction error
 //     w[k]  += mu * e * d[k] / sigma - w[k] / 2^LEAK,   sigma = sum d[k]^2
 // What is predictable over DELAY samples (voice harmonics, carriers, whistles)
-// ends up in y, white-ish noise mostly in e. mode 1 = NR: out = y (the noise
-// is suppressed); mode 2 = ANF: out = e (steady tones removed); mode 0: out =
-// x (the filter keeps adapting, so switching is instant).
+// ends up in y, white-ish noise mostly in e. mode 1 = NR: out = y + e*mix
+// (the noise is suppressed); mode 2 = ANF: out = e (steady tones removed);
+// mode 0: out = x (the filter keeps adapting, so switching is instant).
+//
+// NR strength (2026-11-15, was out = y only): the predictor also drops what
+// in speech is unpredictable - consonants, upper formants. Python model
+// (real speech + SSB-band noise, SNR 6dB, mu 2^-11): with out = y the speech
+// lost -6/-16/-21dB in 0.3-1/1-2/2-2.7kHz while the noise lost only -13dB
+// (muffled voice), and the output got 6-15dB quieter the weaker the station.
+// So in NR mode level picks how much of the residual e is mixed back:
+// level 3/2/1/0 = e/2, e/4, e/8, none (the ESP shows them as 1..4, 1 =
+// mildest); mu is fixed at 2^-11 there. At e/4 the 2-2.7kHz loss is ~-11dB,
+// at e/2 the response is nearly flat (+2dB SNR). The loudness drop is made
+// up by a second audio_agc after this module (sdr_esp_top).
 //
 // Step size as WDSP (two_mu = 1e-4 at 48kHz, i.e. ~3.6e-4 at our 13.2kHz):
-// mu = 2^-(10+level) = 9.8e-4..1.2e-4. A strong steady tone (most of the
+// ANF: mu = 2^-(10+level); NR: 2^-11 = 9.8e-4..1.2e-4. A strong steady tone (most of the
 // power in one eigen-mode) still converges in ~2^(10+level) samples
 // (0.1-0.6s), while white noise, spread over all 64 modes, adapts 64x slower,
 // so the filter does not chase it. (The first version used 2^-(3+level), 150-
@@ -33,8 +44,8 @@
 //
 // One multiplier, time-shared: per sample 64 x (w*d, d*d) for the filter, then
 // 64 x (e*d) for the update, 6 cycles per tap, ~780 cycles in all; inputs
-// come every 2048. out_valid ~390 cycles after in_valid (right after the
-// filter pass). Two BSRAMs: the delay line (128 x 18) and the weights
+// come every 2048. out_valid ~391 cycles after in_valid (right after the
+// filter pass, +1 for the output register). Two BSRAMs: the delay line (128 x 18) and the weights
 // (64 x 32).
 module audio_nr #(
     parameter TAPS  = 64,
@@ -43,7 +54,7 @@ module audio_nr #(
 ) (
     input  wire               clk,
     input  wire [1:0]         mode,        // 0 off, 1 NR, 2 ANF (3 = ANF)
-    input  wire [1:0]         level,       // mu = 2^-(10+level)
+    input  wire [1:0]         level,       // ANF: mu = 2^-(10+level); NR: mix e/2, e/4, e/8, 0 for 3..0
     input  wire               in_valid,
     input  wire signed [15:0] in_audio,
     output reg                out_valid = 1'b0,
@@ -115,7 +126,7 @@ module audio_nr #(
             for (b = 0; b < 38; b = b + 1) if (v[b]) lead1 = b;
         end
     endfunction
-    wire [5:0] mu_sh = 6'd10 + {4'd0, level};
+    wire [5:0] mu_sh = (mode == 2'd1) ? 6'd11 : 6'd10 + {4'd0, level};
     wire [6:0] l_mu  = {1'b0, lead1(sacc)} + {1'b0, mu_sh};
     wire [5:0] sh_new = (l_mu > 7'd24) ? l_mu[5:0] - 6'd24 : 6'd0;
 
@@ -128,14 +139,29 @@ module audio_nr #(
     wire signed [31:0] w_new = (w_nx >  37'sd2147483647) ?  32'sd2147483647 :
                                (w_nx < -37'sd2147483648) ? -32'sd2147483648 : w_nx[31:0];
 
-    function signed [15:0] sat16(input signed [17:0] v);
-        sat16 = (v > 18'sd32767) ? 16'sd32767 : (v < -18'sd32768) ? -16'sd32768 : v[15:0];
+    function signed [15:0] sat16(input signed [18:0] v);
+        sat16 = (v > 19'sd32767) ? 16'sd32767 : (v < -19'sd32768) ? -16'sd32768 : v[15:0];
     endfunction
+
+    // NR output: y + e * {0, 1/8, 1/4, 1/2}[level], from registered y_r / e
+    // one cycle after S_OUT (in one cycle with the y/e math it was the
+    // 65.8 MHz critical path)
+    reg  signed [17:0] y_r = 18'sd0;
+    reg                out_pend = 1'b0;
+    wire signed [17:0] e_mix = (level == 2'd0) ? 18'sd0 :
+                               (level == 2'd1) ? (e >>> 3) :
+                               (level == 2'd2) ? (e >>> 2) : (e >>> 1);
+    wire signed [18:0] nr_sum = y_r + e_mix;
 
     always @(posedge clk) begin
         out_valid <= 1'b0;
         d_we      <= 1'b0;
         w_we      <= 1'b0;
+        out_pend  <= 1'b0;
+        if (out_pend) begin
+            out_audio <= (mode == 2'd0) ? sat16(x) : (mode == 2'd1) ? sat16(nr_sum) : sat16(e);
+            out_valid <= 1'b1;
+        end
         case (st)
             S_IDLE: if (in_valid) begin
                         x      <= in_audio;
@@ -167,9 +193,9 @@ module audio_nr #(
                     end
             S_OUT:  begin
                         e         <= e_sat;
+                        y_r       <= y_sat;
                         sh        <= sh_new;
-                        out_audio <= (mode == 2'd0) ? sat16(x) : (mode == 2'd1) ? sat16(y_sat) : sat16(e_sat);
-                        out_valid <= 1'b1;
+                        out_pend  <= 1'b1;
                         k         <= 6'd0;
                         t         <= 3'd0;
                         st        <= S_UPD;

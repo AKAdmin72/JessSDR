@@ -4,11 +4,16 @@ Project renamed 2026-11-10 from `tang20k_adc_9226` (after Jessica, the
 user's cat) and moved from `~/Development/tang_nano_9k_projects/` to
 `~/Development/JessSDR`; sibling projects are now under
 `../tang_nano_9k_projects/`. Boot splash: `esp32/tools/gen_splash.py N`
-(her real face, `esp32/tools/jessica_cutout.png` cut from a photo with
-cv2.grabCut - drawn cats never looked like her; style 1 = photo chosen,
-2-5 = cartoon/oil/pencil/pixel) -> `esp32/main/splash_img.h` (palette +
-RLE, ~83 KB), shown by splash.c during the link self-test (>= 2.5 s).
+style 6 = the user's logo `esp32/tools/jessica_logo.png` (2026-11-15,
+drawn head + radio waves; cut out onto the dark starry background, outer
+contour + waves recoloured light blue - user disliked the cream one) -
+current. Styles 1-5 = her photo cutout (`jessica_cutout.png`, cv2.grabCut)
+as photo/cartoon/oil/pencil/pixel. -> `esp32/main/splash_img.h` (palette +
+RLE, ~90 KB), shown by splash.c during the link self-test (>= 2.5 s).
 Display turned 180 deg 2026-11-10: MADCTL 0x28 (was 0xE8).
+Main panel view (2026-11-15, menu Display > View, NVS "view"): SPECTRUM
+(default, 254 px) / WATERFALL (254 px, dashed red dial line) / BOTH (120+134);
+waterfall ring is 254 rows in PSRAM, always filled -> no history lost on switch.
 
 Goal: Sipeed Tang Nano 20K + AD9226 ADC module (+ ILI9341 TFT). Phase 1 =
 ADC bring-up/tests (`adc_test/`), phase 2 = 40m (7.0–7.2 MHz) direct-sampling
@@ -37,16 +42,16 @@ scheme as ../tang_nano_9k_projects/FpgaRX-SDR. Tang-only receiver (no ESP32): ta
   headers J5/J6). Pin choice rules and every excluded pin are documented in
   `adc_test/adc_test.cst` — check there before picking a new pin.
 
-## Pinout single source of truth
-`hardware/gen_wiring_sch.py` generates the KiCad wiring schematic
-`hardware/wiring/wiring.kicad_sch`; the `.cst` must match it. After changing
-pins: edit both, re-run the script, `kicad-cli sch erc`, and re-run
-`hardware/gen_layout_svg.py` (physical layout picture `docs/wiring_layout.png`,
-built from the same tables).
-Phase 3 whole-system schematic (ESP32-S3 DevKitC + 4" ST7796S + encoder/
-buttons + ESP supply D1/LC + antenna/BPF + Tang + AD9226):
-`hardware/gen_system_sch.py` -> `hardware/system/` (.kicad_sch + .pdf), imports
-the Tang/ADC tables from gen_wiring_sch.py, ESP pins = esp32/main/*.c.
+## Schematic = single source of truth (one file, one sheet)
+`hardware/gen_schematic.py` -> `hardware/jesssdr/` (.kicad_sch + .pdf, A2):
+the whole receiver as built - antenna/BPF, AD9226 + its AD8138 input stage
+(IW5ALZ mod, as built), Tang 20K, ESP32-S3 DevKitC, 4" ST7796S, encoder,
+buttons, ESP supply D1/LC. All pin tables live there (Tang J5/J6, P2, ESP
+J1/J3 = esp32/main/*.c); the .cst files must match. After changing pins: edit
+the script, re-run it, `kicad-cli sch erc hardware/jesssdr/jesssdr.kicad_sch`
+(must be 0 violations). The old separate drawings (wiring/ = Tang-only with
+ILI9341, system/, frontend_mod/, docs/wiring_layout.png) were merged into it
+2026-11-14; the Tang-only wiring is in tag working-2026-11-07.
 
 ## AD9226 module facts / open questions
 - Black single-channel "AD9226 12-BIT 65MSPS" board, 5V, SMA input, 2x10
@@ -55,9 +60,9 @@ the Tang/ADC tables from gen_wiring_sch.py, ESP pins = esp32/main/*.c.
   (IW5ALZ, hackaday.io/project/186329 logs 213303/213304; his mod: gain
   6.64, +24.9 dB). Needed for 40m sensitivity — measure stock gain first.
 - Bit order (MSB side) unknown → `adc_test_top` parameter `BIT_REVERSE`.
-- Gain mod drawing (stock vs IW5ALZ: Rser 200→C 100n, RG 200→360 (as built; IW5ALZ 390), RF
-  200→2.2k, RBAL 50→22): `hardware/gen_frontend_mod_sch.py` → `hardware/frontend_mod/`
-  (.kicad_sch + .pdf). Topology from his formulas. User probed 2026-11-07:
+- Gain mod (IW5ALZ: Rser 200→C 100n, RG 200→360 (as built; IW5ALZ 390), RF
+  200→2.2k, RBAL 50→22): drawn as built in the frame "Вход AD9226" of
+  `hardware/jesssdr` (draw_frontend()). Topology from his formulas. User probed 2026-11-07:
   RG2 → RBAL 50 Ω → GND (balances 62||(200+50)=49.7); board R-numbers unverified.
   MOD DONE on the real board 2026-11-07 (RF 2k2, RG 360, RBAL 22, C 100n):
   user reports reception much better. Expected gain +25.4 dB vs stock -> the
@@ -139,6 +144,24 @@ ssb_demod's dec I/Q, NR after AGC). PEAK = max|code-2048|>>3 per 2^24 clk,
 OTR -> 255. UART subset ?/f/m/q/a + 'v' (wide I/Q dump). Fmax 81.8, BSRAM
 18/46, DSP 8/24. tbs: sim/tb_spi_regs, tb_i2s_link, tb_am_demod,
 tb_audio_nr, tb_sdr_esp_top (~10 min). ESP fpga.c expected LO_FW updated.
+NR rework 2026-11-15 (user: NR too aggressive, highs gone, weak stations
+inaudible; Python model confirmed: out=y lost -16/-21dB at 1-2/2-2.7kHz vs
+noise -13dB, and 6-15dB loudness): NR out = y + residual mix (Level 1..4 =
+e/2,e/4,e/8,0; mu fixed 2^-11; ANF unchanged) + 2nd audio_agc (G_MAX 8x)
+after NR/ANF (bypassed when off). ESP NVS key nrl3, default Level 2.
+v6 (2026-11-15, VERSION 6): sdr_esp forks ssb_demod.v (programmable 255-tap
+complex filter in BSRAM, written by the ESP: spi_regs CF_ADDR 0x19 + 5-byte
+CF_DATA 0x1A..0x1E bursts; power-up cf_coef.hex = LSB 300-2700 from
+gen_cf_coef.py; same formula as fpga.c fpga_set_filter) and audio_agc.v
+(speed port: fast/med/slow); VOL 0x17 (Q1.7 before audio_i2s), AGC 0x18.
+build uses these forks, not ../sdr's. tb_ssb_filter (LSB -109 dB opposite,
+CW500 -84 dB @800 Hz). NR output stage pipelined (Fmax 65.8 -> 81).
+ESP: CW mode (UI-only: FPGA USB, LO = dial - 700, filter 1k/500/250 round
+700 Hz), SSB filters 1.8/2.4/2.7/3.0k + IF shift +-1 kHz, AGC menu, volume
+(BACK on main = encoder volume 3 s, menu Audio > Volume; 2 dB steps, 20 = 0 dB),
+Freq cal ppm (System; LO = f/(1+ppm)), S-meter in the header (LEVEL ->
+dBm approx -90.7+6.02L/8-25, S9 = -73). SCRATCH = 0xC5 marks "settings
+sent"; a mismatch (FPGA restart / link test) resends all incl. filter taps.
 Flashed (both) 2026-11-10, ESP self-test all PASS. Later same day: Tang S1/S2
 = encoder stand-in (buttons.v -> spi_regs 0x16 BTN, 2-bit short/long counters,
 ESP main.c tang_buttons() polls 30 ms: S1 short/long = NEXT/SELECT, S2 short =
@@ -151,14 +174,14 @@ tick: 19 -> 35 FPS.
 ESP pins revised 2026-11-08 from Screenshots/photo_2026-11-08_22-27-08.jpg
 (perfboard: ESP32-S3-DevKitC **N16R8** left of the Tang, both antenna/HDMI
 up): link on ESP right row J3, J5-n opposite J3-(23-n) -> straight jumpers
-(gen_wiring_sch.ESP_LINK: SCK 53/G1, MISO 71/G2, WS 72/G42, MOSI 79/G39,
+(gen_schematic.ESP_LINK: SCK 53/G1, MISO 71/G2, WS 72/G42, MOSI 79/G39,
 BCK 41/G47, DATA 42/G21, CS_N 80/G20, GND J5-2/J3-21; J5-1 +5V faces ESP
 GND - never bridge). TFT on left row J1: CS/RST/DC/MOSI/SCK/LED =
-4/5/6/7/15/16; encoder 17/18/8, buttons 12/13/14. GPIO20 = USB D+ -> debug
+4/5/6/7/15/16; encoder A/B 17/18 (LPD3806-600BM optical, 5V, NPN OC -> 4.7k pull-ups to 3V3, PCNT x4 = 2400/rev, input_enc_steps(): 50 dial steps/rev with gentle x2/x4 acceleration (smoothed speed), ENC_DIR -1, 20 menu steps/rev), SELECT button 8 (was encoder push), buttons 12/13/14. GPIO20 = USB D+ -> debug
 console moved from USB-Serial-JTAG to UART0 (COM port). 86/G38 avoided
 (86 = BL616 IO0). sdkconfig = N16R8 (octal PSRAM 8MB AP_3v3, 16MB flash).
 Flashed 2026-11-08 via COM (CH343 1a86:55d3, /dev/ttyACM0): boots, SIM 16 FPS,
-console OK; user confirmed the picture (MADCTL E8, invert 0; now 0x28, see top). hardware/system draws ESP|Tang side by side with real wires.
+console OK; user confirmed the picture (MADCTL E8, invert 0; now 0x28, see top). hardware/jesssdr draws ESP|Tang side by side with real wires.
 ```
 cd adc_test && ./build && ./flash
 iverilog -g2012 -o sim/tb_adc_capture sim/tb_adc_capture.v adc_capture.v && vvp sim/tb_adc_capture

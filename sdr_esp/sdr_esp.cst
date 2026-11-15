@@ -1,5 +1,5 @@
 // Tang Nano 20K - 40m SDR v5 with the ESP32-S3 UI. ADC pins = ../sdr/sdr.cst,
-// ESP link = ../adc_test/adc_test.cst (reserved block) / hardware/gen_wiring_sch.py.
+// ESP link = ../adc_test/adc_test.cst (reserved block) / hardware/gen_schematic.py.
 // No TFT on the Tang any more: pin 71 (old tft_cs) is ESP MISO.
 IO_LOC "clk" 4;
 IO_PORT "clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE;

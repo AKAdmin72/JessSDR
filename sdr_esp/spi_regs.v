@@ -1,7 +1,7 @@
 // SPI slave register file: the ESP32-S3 (SPI master, mode 0, MSB first)
 // controls the FPGA through it. Copied from ../tang_nano_9k_projects/FpgaRX-SDR/stage1/spi_regs.v;
 // changes for JessSDR sdr_esp/: VERSION is a parameter, register
-// 0x15 LEVEL and 0x16 BTN added, and clk is the 64.8 MHz DSP clock (sdr_esp_top.v ties
+// 0x15 LEVEL, 0x16 BTN, 0x17 VOL, 0x18 AGC, 0x19..0x1E filter taps added, and clk is the 64.8 MHz DSP clock (sdr_esp_top.v ties
 // IQC_* to 0 and LO_SHIFT_K to 0 - the DDC is centred on the dial; LO_FW =
 // the 64.8 MHz NCO phase increment).
 //
@@ -43,6 +43,15 @@
 //                      bits 3:2 level (mu = 2^-(10+level))
 //   0x14 PEAK      RO  adc_peak.v: max |I|,|Q| of the raw ADC samples over the
 //                      last 0.31s, |x| >> 9 (255 = full scale, >= 240 = clipped)
+//   0x15 LEVEL     RO  level_meter.v L8 (S-meter)
+//   0x16 BTN       RO  Tang S1/S2 press counters (buttons.v)
+//   0x17 VOL       RW  audio gain, unsigned Q1.7 (0x80 = 1.0, 0 = mute)
+//   0x18 AGC       RW  bits 1:0 audio_agc speed: 0 fast, 1 medium, 2 slow
+//   0x19 CF_ADDR   RW  ssb_demod filter tap index for the next CF_DATA write
+//   0x1A..0x1E CF_DATA WO one complex tap, 40 bits MSB first, low 36 used =
+//                  {re[17:0], im[17:0]} Q1.17. 0x1A..0x1D are staged; writing
+//                  0x1E writes the tap at CF_ADDR and increments CF_ADDR, so
+//                  the ESP sets CF_ADDR = 0 once and sends 255 5-byte bursts.
 //   others        RO  0x00
 module spi_regs #(
     parameter [7:0] VERSION = 8'h06
@@ -59,6 +68,11 @@ module spi_regs #(
     output reg  [1:0] mode = 2'd0,
     output reg        mode_set = 1'b0,     // single-cycle pulse, mode already new
     output reg  [3:0] nr = 4'd0,
+    output reg  [7:0] vol = 8'h80,
+    output reg  [1:0] agc = 2'd1,
+    output reg        cf_we = 1'b0,        // single-cycle pulse
+    output reg  [7:0] cf_waddr = 8'd0,
+    output reg [35:0] cf_wdata = 36'd0,
     input  wire [31:0] lo_fw,
     input  wire signed [3:0] lo_shift_k,
     input  wire [17:0] iqc_c1,
@@ -111,6 +125,9 @@ module spi_regs #(
             7'h14:   reg_read = adc_peak;
             7'h15:   reg_read = level;
             7'h16:   reg_read = btn;
+            7'h17:   reg_read = vol;
+            7'h18:   reg_read = {6'd0, agc};
+            7'h19:   reg_read = cf_addr;
             default: reg_read = 8'h00;
         endcase
     endfunction
@@ -168,6 +185,30 @@ module spi_regs #(
 
     always @(posedge clk)
         if (wr_strobe && addr == 7'h13) nr <= byte_in[3:0];
+
+    always @(posedge clk)
+        if (wr_strobe && addr == 7'h17) vol <= byte_in;
+
+    always @(posedge clk)
+        if (wr_strobe && addr == 7'h18) agc <= byte_in[1:0];
+
+    // filter taps: CF_ADDR, then 5-byte CF_DATA bursts
+    reg [7:0]  cf_addr  = 8'd0;
+    reg [31:0] cf_stage = 32'd0;
+    wire       cf_commit = wr_strobe && addr == 7'h1E;
+    always @(posedge clk)
+        if (wr_strobe && addr == 7'h19) cf_addr <= byte_in;
+        else if (cf_commit)             cf_addr <= cf_addr + 8'd1;
+
+    always @(posedge clk)
+        if (wr_strobe && addr == 7'h1A)      cf_stage[31:24] <= byte_in;
+        else if (wr_strobe && addr == 7'h1B) cf_stage[23:16] <= byte_in;
+        else if (wr_strobe && addr == 7'h1C) cf_stage[15:8]  <= byte_in;
+        else if (wr_strobe && addr == 7'h1D) cf_stage[7:0]   <= byte_in;
+
+    always @(posedge clk) cf_we <= cf_commit;
+    always @(posedge clk) if (cf_commit) cf_waddr <= cf_addr;
+    always @(posedge clk) if (cf_commit) cf_wdata <= {cf_stage[27:0], byte_in};
 
     always @(posedge clk) begin
         mode_set <= 1'b0;

@@ -27,7 +27,7 @@ Perfboard layout (chosen for the shortest wires):
             HDMI end up, USB-C down
 ```
 **J5 = left row** (ESP side), **J6 = right row** (ADC side), pin 20 of both
-rows at the top. Full diagram: `hardware/wiring/`.
+rows at the top. Full diagram: `hardware/jesssdr/jesssdr.pdf`.
 
 | AD9226 P2 (+5V row at top) | Tang | FPGA |
 |---|---|---|
@@ -78,7 +78,7 @@ DevKitC, N8R2); display **4" SPI 480x320** (assumed ST7796S - check the
 marking; ILI9488 would need RGB666), same header pinout as the 2.8"
 ILI9341. ESP pins (2026-11-08, board is N16R8 = octal PSRAM on 33..37):
 LCD CS/RST/DC/MOSI/SCK/LED = 4/5/6/7/15/16 (left row J1, header order),
-FPGA link on the right row J3 (table above), encoder A/B/SW 17/18/8,
+FPGA link on the right row J3 (table above), optical encoder A/B 17/18 (LPD3806-600BM, pull-ups to 3V3), SELECT 8,
 buttons BACK/PREV/NEXT 12/13/14. Debug console = COM port (UART0).
 ESP gets its own LC-filtered 5V; Wi-Fi off.
 
@@ -92,8 +92,8 @@ Link:
   No LO offset (K = 0): the DDC is centred on the dial.
 
 Steps (each one leaves a working receiver; check the noise floor after 4):
-1. Wiring: ESP + 4" display, filtered supply. Schematic: `hardware/system/system.pdf`
-   (`hardware/gen_system_sch.py`).
+1. Wiring: ESP + 4" display, filtered supply. Schematic: `hardware/jesssdr/jesssdr.pdf`
+   (`hardware/gen_schematic.py`).
 2. ESP standalone: FpgaRX firmware ported to 480x320 (ST7796), SIM source.
    The Tang keeps its own TFT build meanwhile (display unplugged).
    Status 2026-11-08: works on hardware (N16R8, display OK, MADCTL E8).

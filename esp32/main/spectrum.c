@@ -3,13 +3,17 @@
 //
 //   y   0..47   header: dial frequency, mode/step, ADC/speed readout
 //   y  48..65   frequency ruler (absolute kHz)
-//   y  66..185  spectrum (heatmap-filled, grid, passband, red dial mark)
-//   y 186..319  waterfall
+//   y  66..319  panel, by the view (menu: Display > View):
+//                 SPECTRUM (default) = spectrum 254 px,
+//                 WATERFALL          = waterfall 254 px (dashed red dial line),
+//                 BOTH               = spectrum 120 px (66..185) + waterfall 134 px
+//   spectrum = heatmap-filled, grid, passband, red dial mark
 // Input is either the real I/Q block from the FPGA (I2S, the wide DDC
 // output, 105.54kHz complex, centred on the dial) or a synthetic stream
 // like it: a few LSB "voices", CW carriers and noise. FFT 1024, no window
 // (the user prefers stations as broad shapes). The header shows the
 // spectrum rate and where the time goes.
+#include <assert.h>
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -19,6 +23,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_random.h"
+#include "esp_heap_caps.h"
 #include "dsps_fft2r.h"
 #include "lcd.h"
 #include "spectrum.h"
@@ -30,10 +35,14 @@ static const char *TAG = "spectrum";
 #define HDR_H      48
 #define RULER_Y    48
 #define RULER_H    18
-#define SPEC_Y     66
-#define SPEC_H     120                  // multiple of LCD_CHUNK
-#define WF_Y       186
-#define WF_H       (LCD_H - WF_Y)
+#define PANEL_Y    66
+#define PANEL_H    (LCD_H - PANEL_Y)    // 254: spectrum + waterfall share it
+#define SPEC_Y     PANEL_Y
+#define SPEC_H_BOTH 120
+#define WF_MAX     PANEL_H              // waterfall ring rows (the tallest view)
+
+static int spec_h_px = PANEL_H;         // spectrum panel height, 0 = hidden
+static int wf_y = LCD_H, wf_h = 0;      // waterfall panel, wf_h 0 = hidden
 
 // ---- signal ----
 #define FS         FPGA_FS_HZ           // wide DDC output, 64.8MHz / 614
@@ -41,10 +50,12 @@ static const char *TAG = "spectrum";
 #define HZ_PER_PX  (FS / LCD_W)
 
 static uint32_t dial_hz = 7100000;
-static float lo_shift_hz = 0;           // K * fs/16; K = 0 here (DDC centred on the dial)
+static float lo_shift_hz = 0;           // spectrum centre (the LO) - dial: CW -pitch, else 0
 static int step_idx = 3;                // 1 = 10Hz ... 6 = 1MHz (tune_ctrl.v numbering)
-static int demod = FPGA_MODE_LSB;       // FPGA_MODE_*
+static char mode_label[4] = "LSB";     // header, set by main.c (LSB/USB/AM/CW)
+static char bw_label[6] = "";           // filter width in the header ("2.4k")
 static bool demod_auto = true;          // chosen by the band plan
+static float pb_lo = -2700, pb_hi = -300;   // passband shading, Hz relative to the dial
 
 #define C_BG       RGB565(0, 0, 0)
 #define C_HDR_BG   RGB565(0, 0, 40)
@@ -198,10 +209,13 @@ static float px_avg[LCD_W];    // averaged over frames (stage1/level_averager.v)
 static float px_wf[LCD_W];     // lightly averaged, for the waterfall
 static float est[LCD_W];       // per-pixel floor estimate (stage1/spectrum_eq.v)
 static float env[LCD_W];       // lower envelope of est across frequency
-static bool primed;
-static uint8_t spec_h[LCD_W];  // spectrum column height 0..SPEC_H
+static int warm;               // frames since start / floor reset (stops counting at EQ_WARM)
+static uint8_t spec_h[LCD_W];  // spectrum column height 0..spec_h_px
 static uint8_t spec_lv[LCD_W]; // spectrum column colour level
-static uint8_t wf[WF_H][LCD_W];
+static uint8_t line_lo[LCD_W], line_hi[LCD_W];   // white trace span per column (0 = none)
+static float rel_db[LCD_W];    // dB above the floor, per pixel
+static bool view_smooth = true; // [1 2 1]/4 across frequency on the spectrum (menu: Smooth)
+static uint8_t (*wf)[LCD_W];   // WF_MAX rows, PSRAM; always filled, the view shows the newest wf_h
 static int wf_head;            // index of the newest waterfall row
 static float view_range = 40;  // dB over the spectrum panel (menu: Range)
 static bool view_win;          // Hann window before the FFT (menu: Window)
@@ -212,6 +226,13 @@ static float hann[FFT_N];
 #define AVG_A      0.125f                 // level_averager AVG_SHIFT=3
 #define WF_A       0.5f
 #define EQ_RISE    1.6f                   // dB/s, est creep up (RISE=5)
+// Start-up: the first EQ_SKIP blocks are only used to prime the averages
+// (the first block after the link self-test can be stale or near silent),
+// then for EQ_WARM frames (~1s) est follows px_avg both ways. Before, est
+// came from one noisy frame, sat 10-15dB under the real floor and took
+// ~10s at EQ_RISE to climb: the spectrum started high and sank to 0.
+#define EQ_SKIP    4
+#define EQ_WARM    36
 #define EQ_SLOPE   (0.4f * HZ_PER_PX / 206.0f)   // dB per pixel (SLOPE=1 level/bin)
 // FpgaRX had a 1/f + LO-leakage hump around the LO and a steeper envelope
 // there (DC_W/DC_SLOPE). The direct-sampling DDC has none, and the dial is
@@ -255,15 +276,16 @@ static void spectrum_process(void)
     // 1. averaging between frames, in dB like level_averager.v
     // 2. per-pixel floor: snaps down at once, creeps up at EQ_RISE
     for (int x = 0; x < LCD_W; x++) {
-        if (!primed) {
+        if (warm < EQ_SKIP) {
             px_avg[x] = px_wf[x] = est[x] = px_db[x];
             continue;
         }
         px_avg[x] += (px_db[x] - px_avg[x]) * AVG_A;
         px_wf[x]  += (px_db[x] - px_wf[x]) * WF_A;
-        est[x] = px_avg[x] < est[x] ? px_avg[x] : est[x] + EQ_RISE * dt;
+        if (warm < EQ_WARM) est[x] = px_avg[x];
+        else est[x] = px_avg[x] < est[x] ? px_avg[x] : est[x] + EQ_RISE * dt;
     }
-    primed = true;
+    if (warm < EQ_WARM) warm++;
 
     // 3. lower envelope across frequency: min over k of est[x+k] + |k|*SLOPE.
     // Follows the wide center hump and the edge roll-off, but a station
@@ -275,16 +297,42 @@ static void spectrum_process(void)
     // 4. output = level - envelope: flat noise along the bottom. view_range
     // dB fill the panel (was a fixed 60dB, waterfall 45dB: a 3-6dB station
     // was only 5-10px high and nearly black in the waterfall).
-    wf_head = (wf_head + WF_H - 1) % WF_H;
-    float k_h = SPEC_H / view_range, k_lv = 255.0f / (view_range * 0.92f), k_wf = 255.0f / (view_range * 0.75f);
+    wf_head = (wf_head + WF_MAX - 1) % WF_MAX;
+    float k_h = spec_h_px / view_range, k_lv = 255.0f / (view_range * 0.92f), k_wf = 255.0f / (view_range * 0.75f);
+    for (int x = 0; x < LCD_W; x++) rel_db[x] = px_avg[x] - env[x];   // dB above the floor
+    // Smooth ([1 2 1]/4 in dB): less noise "grass". A lone 1-px peak (CW)
+    // loses about half its height and gets 3 px wide; a voice station hardly changes.
+    float prev = rel_db[0];
+    if (view_smooth)
+        for (int x = 1; x < LCD_W - 1; x++) {
+            float cur = rel_db[x];
+            rel_db[x] = (prev + 2.0f * cur + rel_db[x + 1]) * 0.25f;
+            prev = cur;
+        }
     for (int x = 0; x < LCD_W; x++) {
-        float rel = px_avg[x] - env[x];                 // dB above the floor
+        float rel = rel_db[x];
         int h = (int)((rel + 1.0f) * k_h);
-        spec_h[x] = h < 0 ? 0 : h > SPEC_H ? SPEC_H : h;
+        spec_h[x] = h < 0 ? 0 : h > spec_h_px ? spec_h_px : h;
         int lv = (int)((rel + 1.0f) * k_lv);
         spec_lv[x] = lv < 0 ? 0 : lv > 255 ? 255 : lv;
         int w = (int)((px_wf[x] - env[x] + 1.0f) * k_wf);
         wf[wf_head][x] = w < 0 ? 0 : w > 255 ? 255 : w;
+    }
+    // Trace: column x is white from the midpoint towards its left neighbour's
+    // top to the midpoint towards its right one (and its own top), so the tops
+    // join into one unbroken line instead of loose dots.
+    for (int x = 0; x < LCD_W; x++) {
+        int h = spec_h[x];
+        int hl = x > 0 ? (h + spec_h[x - 1] + 1) / 2 : h;
+        int hr = x < LCD_W - 1 ? (h + spec_h[x + 1] + 1) / 2 : h;
+        int lo = h, hi = h;
+        if (hl < lo) lo = hl;
+        if (hr < lo) lo = hr;
+        if (hl > hi) hi = hl;
+        if (hr > hi) hi = hr;
+        if (lo < 1) lo = 1;
+        line_lo[x] = hi ? lo : 0;
+        line_hi[x] = hi;
     }
 }
 
@@ -333,8 +381,7 @@ static void draw_ruler(void)
     lcd_buf_send(0, RULER_Y, LCD_W, RULER_H);
 
     // passband (what the demodulator hears) and the dial marker
-    float p0 = demod == FPGA_MODE_AM ? -5000.0f : demod == FPGA_MODE_USB ? 300.0f : -2700.0f;
-    float p1 = demod == FPGA_MODE_AM ?  5000.0f : demod == FPGA_MODE_USB ? 2700.0f : -300.0f;
+    float p0 = pb_lo, p1 = pb_hi;
     for (int x = freq_to_x(dial_hz + p0); x <= freq_to_x(dial_hz + p1); x++)
         if (x >= 0 && x < LCD_W) col_flags[x] |= F_PASS;
     int xd = freq_to_x(dial_hz);
@@ -362,10 +409,81 @@ static void draw_freq(void)
 }
 
 // Mode: yellow = picked by the band plan (AUTO), cyan = set by hand
+#define BW_X       (STEP_X + 100)       // filter width, right of "STEP 100k"
 static void draw_mode(void)
 {
-    static const char *name[] = { "LSB", "USB", "AM " };
-    lcd_text(MODE_X, 4, &font_mid, name[demod], demod_auto ? RGB565(255, 220, 0) : RGB565(0, 220, 255), C_HDR_BG);
+    char s[8];
+    snprintf(s, sizeof(s), "%-3s", mode_label);
+    lcd_text(MODE_X, 4, &font_mid, s, demod_auto ? RGB565(255, 220, 0) : RGB565(0, 220, 255), C_HDR_BG);
+    snprintf(s, sizeof(s), "%-5s", bw_label);
+    lcd_text(BW_X, 4, &font_mid, s, RGB565(0, 220, 255), C_HDR_BG);
+}
+
+// ---- S-meter / volume slot: header row 2, right of the ADC/FPS slot ----
+// "S9+20" + a bar: S0..S9 (6dB per S unit, S9 = -73dBm) on the first 80px
+// (green), S9..S9+60 on the last 40px (red). While the encoder sets the
+// volume the slot shows "VOL nn" and a bar instead.
+#define SM_X       (MODE_X + 64)
+#define SM_BAR_X   (SM_X + 60)
+#define SM_BAR_W   120
+static float sm_dbm = -200;
+static int vol_shown = -1;              // >= 0: volume display instead of the S-meter
+static int sm_drawn_px = -1, sm_drawn_kind = -1;
+static char sm_drawn_txt[8];
+static void draw_smeter(bool force)
+{
+    char t[16];
+    int px, split;
+    uint16_t c_lo, c_hi;
+    if (vol_shown >= 0) {
+        snprintf(t, sizeof(t), "VOL%2d", vol_shown);
+        px = vol_shown * SM_BAR_W / 23;
+        split = SM_BAR_W * 20 / 23;     // 0 dB mark
+        c_lo = RGB565(0, 200, 255); c_hi = RGB565(255, 160, 0);
+    } else {
+        float s = (sm_dbm + 127.0f) / 6.0f;          // S units, S0 = -127dBm
+        if (s < 0) s = 0;
+        if (s <= 9.0f) { snprintf(t, sizeof(t), "S%d", (int)s); px = (int)(s * 80.0f / 9.0f); }
+        else {
+            float over = sm_dbm + 73.0f;
+            snprintf(t, sizeof(t), "S9+%d", (int)(over / 10.0f) * 10);
+            px = 80 + (int)(over * 40.0f / 60.0f);
+        }
+        if (px > SM_BAR_W) px = SM_BAR_W;
+        split = 80;
+        c_lo = RGB565(0, 220, 80); c_hi = RGB565(255, 40, 40);
+    }
+    int kind = vol_shown >= 0;
+    char s[8];
+    snprintf(s, sizeof(s), "%-5.5s", t);
+    if (force || kind != sm_drawn_kind || strcmp(s, sm_drawn_txt) != 0) {
+        strcpy(sm_drawn_txt, s);
+        lcd_text(SM_X, ROW2_Y, &font_mid, s, kind ? RGB565(0, 200, 255) : C_TEXT, C_HDR_BG);
+    }
+    if (force || px != sm_drawn_px || kind != sm_drawn_kind) {
+        uint16_t *b = lcd_buf_get();
+        for (int y = 0; y < 12; y++)
+            for (int x = 0; x < SM_BAR_W; x++) {
+                bool on = x < px && y >= 2 && y < 10;
+                bool tick = (y >= 10) && (kind ? (x == split) : (x % 9 == 0 && x <= 80) || (x > 80 && (x - 80) % 13 == 0));
+                b[y * SM_BAR_W + x] = on ? (x < split ? c_lo : c_hi) : tick ? C_DIM : RGB565(10, 10, 60);
+            }
+        lcd_buf_send(SM_BAR_X, ROW2_Y + 4, SM_BAR_W, 12);
+        sm_drawn_px = px;
+    }
+    sm_drawn_kind = kind;
+}
+
+void spectrum_set_smeter(float dbm)
+{
+    sm_dbm = dbm;
+    draw_smeter(false);
+}
+
+void spectrum_show_volume(int v)
+{
+    vol_shown = v;
+    draw_smeter(false);
 }
 
 static void draw_speed(float fps);
@@ -380,13 +498,17 @@ static void draw_header(void)
     draw_speed(last_fps);
     draw_mode();
     draw_freq();
+    draw_smeter(true);
 }
 
-void spectrum_set_mode(int mode, bool is_auto)
+void spectrum_set_mode(const char *name, const char *bw, bool is_auto, float lo_hz, float hi_hz)
 {
-    bool moved = mode != demod;
-    demod = mode;
+    bool moved = lo_hz != pb_lo || hi_hz != pb_hi;
+    snprintf(mode_label, sizeof(mode_label), "%s", name);
+    snprintf(bw_label, sizeof(bw_label), "%s", bw);
     demod_auto = is_auto;
+    pb_lo = lo_hz;
+    pb_hi = hi_hz;
     draw_mode();
     if (moved) draw_ruler();
 }
@@ -397,9 +519,33 @@ void spectrum_set_view(int range_db, bool window)
     view_win = window;
 }
 
-void spectrum_set_dial(uint32_t hz, int step, int lo_shift_k)
+void spectrum_set_smooth(bool on)
 {
-    float shift = lo_shift_k * (FS / 16);
+    view_smooth = on;
+}
+
+void spectrum_floor_reset(void)
+{
+    warm = 0;
+}
+
+void spectrum_set_layout(int view)
+{
+    switch (view) {
+    case SPEC_VIEW_WATERFALL: spec_h_px = 0;           break;
+    case SPEC_VIEW_BOTH:      spec_h_px = SPEC_H_BOTH; break;
+    default:                  spec_h_px = PANEL_H;     break;
+    }
+    wf_y = PANEL_Y + spec_h_px;
+    wf_h = LCD_H - wf_y;
+    memset(spec_h, 0, sizeof(spec_h));   // heights were scaled for the old panel
+    memset(line_lo, 0, sizeof(line_lo));
+    memset(line_hi, 0, sizeof(line_hi));
+}
+
+void spectrum_set_dial(uint32_t hz, int step, float lo_offset_hz)
+{
+    float shift = lo_offset_hz;
     bool moved = hz != dial_hz || shift != lo_shift_hz;
     dial_hz = hz;
     lo_shift_hz = shift;
@@ -447,39 +593,46 @@ void spectrum_set_adc(bool clip, float peak_dbfs)
 
 static void draw_spectrum(void)
 {
-    for (int y0 = 0; y0 < SPEC_H; y0 += LCD_CHUNK) {
+    for (int y0 = 0; y0 < spec_h_px; y0 += LCD_CHUNK) {
+        int n = spec_h_px - y0 < LCD_CHUNK ? spec_h_px - y0 : LCD_CHUNK;
         uint16_t *b = lcd_buf_get();
-        for (int l = 0; l < LCD_CHUNK; l++) {
+        for (int l = 0; l < n; l++) {
             int y = y0 + l;                      // 0 = top of panel
-            int from_bottom = SPEC_H - y;        // 1..SPEC_H
+            int from_bottom = spec_h_px - y;     // 1..spec_h_px
             bool grid_row = (y % 20) == 0;
             uint16_t *row = b + l * LCD_W;
             for (int x = 0; x < LCD_W; x++) {
                 uint8_t fl = col_flags[x];
                 uint16_t c;
                 if (fl & F_DIAL)                       c = C_DIAL;
-                else if (from_bottom <= spec_h[x])     c = (from_bottom == spec_h[x]) ? C_TEXT : heat_pal[spec_lv[x]];
+                else if (from_bottom >= line_lo[x] && from_bottom <= line_hi[x]) c = C_TEXT;
+                else if (from_bottom <= spec_h[x])     c = heat_pal[spec_lv[x]];
                 else if (fl & F_PASS)                  c = C_PASS;
                 else if ((fl & F_GRID) || grid_row)    c = C_GRID;
                 else                                   c = C_BG;
                 row[x] = c;
             }
         }
-        lcd_buf_send(0, SPEC_Y + y0, LCD_W, LCD_CHUNK);
+        lcd_buf_send(0, SPEC_Y + y0, LCD_W, n);
     }
 }
 
 static void draw_waterfall(void)
 {
-    for (int y0 = 0; y0 < WF_H; y0 += LCD_CHUNK) {
-        int n = WF_H - y0 < LCD_CHUNK ? WF_H - y0 : LCD_CHUNK;
+    // no spectrum above it -> the dial is a dashed red line through the waterfall
+    int xd = -1;
+    if (spec_h_px == 0)
+        for (int x = 0; x < LCD_W; x++) if (col_flags[x] & F_DIAL) xd = x;
+    for (int y0 = 0; y0 < wf_h; y0 += LCD_CHUNK) {
+        int n = wf_h - y0 < LCD_CHUNK ? wf_h - y0 : LCD_CHUNK;
         uint16_t *b = lcd_buf_get();
         for (int l = 0; l < n; l++) {
-            const uint8_t *src = wf[(wf_head + y0 + l) % WF_H];
+            const uint8_t *src = wf[(wf_head + y0 + l) % WF_MAX];
             uint16_t *row = b + l * LCD_W;
             for (int x = 0; x < LCD_W; x++) row[x] = heat_pal[src[x]];
+            if (xd >= 0 && ((y0 + l) & 4)) row[xd] = C_DIAL;
         }
-        lcd_buf_send(0, WF_Y + y0, LCD_W, n);
+        lcd_buf_send(0, wf_y + y0, LCD_W, n);
     }
 }
 
@@ -489,6 +642,9 @@ static int64_t t_sec, sum_gen, sum_fft, sum_draw;
 void spectrum_init(void)
 {
     make_palette();
+    wf = heap_caps_calloc(WF_MAX, LCD_W, MALLOC_CAP_SPIRAM);
+    if (!wf) wf = heap_caps_calloc(WF_MAX, LCD_W, MALLOC_CAP_8BIT);
+    assert(wf);
     ESP_ERROR_CHECK(dsps_fft2r_init_fc32(NULL, FFT_N));
     for (int n = 0; n < FFT_N; n++) hann[n] = 0.5f - 0.5f * cosf(2.0f * (float)M_PI * n / FFT_N);
     siggen_init();

@@ -2,6 +2,8 @@
 # Builds the ESP-linked 40m SDR (headless Gowin EDA). The DSP modules shared
 # with the Tang-only receiver stay in ../sdr (single copy); nco_sin.hex is
 # copied here because ddc.v's $readmemh reads it from the run directory.
+# ssb_demod.v and audio_agc.v are sdr_esp forks (programmable filter, AGC
+# speed); cf_coef.hex (ssb_demod's power-up taps) is read from here too.
 set -e
 P="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 S="$P/../sdr"
@@ -13,10 +15,10 @@ mkdir -p "$P/build_out"
 TCL="$P/build_out/sdr_esp.tcl"
 {
     echo "create_project -name sdr_esp -dir $P/build_out -pn GW2AR-LV18QN88C8/I7 -device_version C -force"
-    for f in sdr_esp_top.v buttons.v spi_regs.v i2s_link_clk.v iq_i2s_tx.v am_demod.v audio_nr.v sdr_esp.cst sdr_esp.sdc; do
+    for f in sdr_esp_top.v buttons.v spi_regs.v i2s_link_clk.v iq_i2s_tx.v am_demod.v audio_nr.v ssb_demod.v audio_agc.v sdr_esp.cst sdr_esp.sdc; do
         echo "add_file $P/$f"
     done
-    for f in ddc.v ssb_demod.v audio_agc.v audio_i2s.v level_meter.v uart_tx.v uart_rx.v; do
+    for f in ddc.v audio_i2s.v level_meter.v uart_tx.v uart_rx.v; do
         echo "add_file $S/$f"
     done
     echo "set_option -top_module sdr_esp_top"

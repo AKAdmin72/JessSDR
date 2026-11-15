@@ -5,8 +5,10 @@
 //   (2) ANF, level 1: 1kHz tone (amp 8000) + white noise (rms ~1000): after
 //       convergence the tone must be >= 20dB down in the output, the noise
 //       roughly kept (within -6..+3dB);
-//   (3) NR, level 1: 700Hz tone (amp 4000) + white noise (rms ~4000): the
-//       tone-to-noise ratio must improve by >= 6dB;
+//   (3) NR, level 0 (no residual mixed back): 700Hz tone (amp 4000) + white
+//       noise (rms ~4000): the tone-to-noise ratio must improve by >= 6dB;
+//   (3b) NR, level 3 (e/2 mixed back): improves by 1..6dB, the noise is
+//       kept within -7..-2dB (milder than level 0);
 //   (4) out_valid once per input.
 module tb_audio_nr;
     reg clk = 0;
@@ -107,7 +109,7 @@ module tb_audio_nr;
         if (r_out < r_in * 0.5 || r_out > r_in * 1.41) begin $display("FAIL: ANF noise changed too much"); errors = errors + 1; end
 
         // (3) NR
-        mode = 1; level = 1;
+        mode = 1; level = 0;
         feed(700.0, 4000.0, 4000.0, 12000);
         measure(700.0, 0); a_in = amp; r_in = res;
         measure(700.0, 1); a_out = amp; r_out = res;
@@ -115,6 +117,17 @@ module tb_audio_nr;
         $display("NR: tone/noise %0.1f dB -> %0.1f dB (tone %0.0f -> %0.0f, noise %0.0f -> %0.0f)",
                  d_in, d_out, a_in, a_out, r_in, r_out);
         if (d_out < d_in + 6.0) begin $display("FAIL: NR improvement < 6dB"); errors = errors + 1; end
+
+        // (3b) NR, mildest: e/2 mixed back (filter already converged)
+        level = 3;
+        feed(700.0, 4000.0, 4000.0, 4000);
+        measure(700.0, 0); a_in = amp; r_in = res;
+        measure(700.0, 1); a_out = amp; r_out = res;
+        d_in = 20.0*$log10(a_in/r_in); d_out = 20.0*$log10(a_out/r_out);
+        $display("NR e/2: tone/noise %0.1f dB -> %0.1f dB, noise %0.1f dB",
+                 d_in, d_out, 20.0*$log10(r_out/r_in));
+        if (d_out < d_in + 1.0 || d_out > d_in + 6.0) begin $display("FAIL: NR e/2 improvement not 1..6dB"); errors = errors + 1; end
+        if (r_out < r_in * 0.447 || r_out > r_in * 0.794) begin $display("FAIL: NR e/2 noise not -7..-2dB"); errors = errors + 1; end
 
         if (nvout != nin) begin $display("FAIL: %0d outputs for %0d inputs", nvout, nin); errors = errors + 1; end
         if (errors == 0) $display("PASS: audio_nr - bypass, ANF notches a tone, NR improves tone/noise");

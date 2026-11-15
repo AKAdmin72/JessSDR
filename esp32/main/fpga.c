@@ -12,7 +12,7 @@
 
 static const char *TAG = "fpga";
 
-// ---- pins: right row J3, straight jumpers to Tang J5 (hardware/system) ----
+// ---- pins: right row J3, straight jumpers to Tang J5 (hardware/jesssdr) ----
 #define PIN_SPI_SCK   1    // J3-4  <-> Tang J5-19, FPGA 53
 #define PIN_SPI_MOSI  39   // J3-9  <-> Tang J5-14, FPGA 79
 #define PIN_SPI_MISO  2    // J3-5  <-> Tang J5-18, FPGA 71
@@ -104,6 +104,32 @@ int fpga_mode_k(int mode)
 {
     (void)mode;
     return 0;
+}
+
+void fpga_set_filter(float lo_hz, float hi_hz)
+{
+    const int n_taps = FPGA_CF_TAPS, mid = (FPGA_CF_TAPS - 1) / 2;
+    float fc = (hi_hz - lo_hz) / 2, f0 = (hi_hz + lo_hz) / 2;
+    fpga_led_hold(true);
+    fpga_write(FPGA_REG_CF_ADDR, 0);
+    for (int k = 0; k < n_taps; k++) {
+        int n = k - mid;
+        float x = 2.0f * fc / FPGA_AUDIO_FS * n;
+        float sinc = n == 0 ? 1.0f : sinf((float)M_PI * x) / ((float)M_PI * x);
+        float w = 0.42f - 0.5f * cosf(2.0f * (float)M_PI * k / (n_taps - 1)) + 0.08f * cosf(4.0f * (float)M_PI * k / (n_taps - 1));
+        float a = 2.0f * fc / FPGA_AUDIO_FS * sinc * w;
+        float ph = 2.0f * (float)M_PI * f0 * n / FPGA_AUDIO_FS;
+        int32_t re = lrintf(a * cosf(ph) * 131072.0f), im = lrintf(a * sinf(ph) * 131072.0f);
+        if (re > 131071) re = 131071;
+        if (re < -131072) re = -131072;
+        if (im > 131071) im = 131071;
+        if (im < -131072) im = -131072;
+        uint64_t word = ((uint64_t)(re & 0x3FFFF) << 18) | (uint64_t)(im & 0x3FFFF);
+        uint8_t tx[6] = { FPGA_REG_CF_DATA, word >> 32, word >> 24, word >> 16, word >> 8, word };
+        spi_transaction_t t = { .length = 48, .tx_buffer = tx };
+        xfer(&t);
+    }
+    fpga_led_hold(false);
 }
 
 uint32_t fpga_expected_lo_fw(uint32_t hz, int k)

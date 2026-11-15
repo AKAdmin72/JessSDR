@@ -18,9 +18,13 @@
 #define FPGA_REG_IQC_C1   0x0E   // 2 bytes RO, iq_corr c1, signed Q0.15 = -(A_Q/A_I) sin(phi)
 #define FPGA_REG_IQC_C2   0x10   // 2 bytes RO, iq_corr c2, signed Q1.14 = (A_Q/A_I) cos(phi)
 #define FPGA_REG_IQC_STAT 0x12   // RO, bit0 = coefficients valid, bit1 = signal present now
-#define FPGA_REG_NR       0x13   // audio_nr: bits 1:0 FPGA_NR_*, bits 3:2 level (mu = 2^-(10+level))
+#define FPGA_REG_NR       0x13   // audio_nr: bits 1:0 FPGA_NR_*, bits 3:2 level (ANF: mu = 2^-(10+level); NR: mix e/2,e/4,e/8,0 for 3..0)
 #define FPGA_REG_PEAK     0x14   // RO, max |ADC code - 2048| >> 3 over 0.26s, 255 = full scale / OTR
 #define FPGA_REG_LEVEL    0x15   // RO, S-meter level (level_meter.v, 6.02dB per 8)
+#define FPGA_REG_VOL      0x17   // audio gain, Q1.7 (0x80 = 1.0, 0 = mute)
+#define FPGA_REG_AGC      0x18   // bits 1:0 AGC speed: FPGA_AGC_*
+#define FPGA_REG_CF_ADDR  0x19   // filter tap index for the next CF_DATA burst
+#define FPGA_REG_CF_DATA  0x1A   // 5 bytes: one complex tap {re18, im18} Q1.17, increments CF_ADDR
 #define FPGA_REG_BTN      0x16   // RO, Tang S1/S2 event counters {s2_long, s2_short, s1_long, s1_short}, 2 bits each
 #define FPGA_PEAK_CLIP    240    // >= -0.6dBFS: the ADC clipped
 #define FPGA_NR_OFF       0
@@ -35,6 +39,12 @@
 #define FPGA_MODE_LSB     0
 #define FPGA_MODE_USB     1
 #define FPGA_MODE_AM      2
+#define FPGA_AGC_FAST     0
+#define FPGA_AGC_MED      1
+#define FPGA_AGC_SLOW     2
+#define FPGA_CF_TAPS      255          // ssb_demod.v programmable filter
+#define FPGA_AUDIO_FS     (64.8e6f / 1229 / 4)   // ssb_demod output rate, 13181 Hz
+#define FPGA_LEVEL_DBM(l) (-90.7f + 6.02f * (l) / 8.0f - 25.0f)   // LEVEL -> dBm (approx.; tools/sdr.py, AD8138 mod +25dB)
 int fpga_mode_k(int mode);
 
 #define FPGA_FS_HZ        105537.46f   // 64.8MHz / 614
@@ -52,6 +62,10 @@ uint32_t fpga_get_freq(void);                // FREQ read back, in Hz
 // Phase increment the FPGA should compute for this dial (sdr_esp_top.v
 // formula); compare with FPGA_REG_LO_FW.
 uint32_t fpga_expected_lo_fw(uint32_t hz, int lo_shift_k);
+// Demodulator filter: complex passband lo..hi Hz in the FPGA's LSB domain
+// (both negative for LSB; USB/CW are mirrored by the FPGA first). 255
+// Blackman-windowed taps, same formula as sdr_esp/gen_cf_coef.py; ~20 ms.
+void     fpga_set_filter(float lo_hz, float hi_hz);
 
 // I2S receive statistics (updated by the receive task on core 1).
 typedef struct {
