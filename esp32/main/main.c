@@ -35,6 +35,7 @@
 #include "spectrum.h"
 #include "fpga.h"
 #include "input.h"
+#include "noise.h"
 
 static const char *TAG = "jesssdr";   // (the NVS namespace stays "fpgarx": saved settings)
 
@@ -58,7 +59,7 @@ static const char *TAG = "jesssdr";   // (the NVS namespace stays "fpgarx": save
 // ---------------------------------------------------------------------------
 // Menu tree
 // ---------------------------------------------------------------------------
-typedef enum { ACT_NONE, ACT_SUBMENU, ACT_BACK, ACT_EXIT, ACT_MODE, ACT_VIEW, ACT_RANGE, ACT_WINDOW, ACT_SMOOTH, ACT_FPS, ACT_NR, ACT_NR_LEVEL, ACT_FILTER, ACT_SHIFT, ACT_AGC, ACT_VOLUME, ACT_PPM, ACT_SOURCE, ACT_TEST_SPI, ACT_TEST_I2S } action_t;
+typedef enum { ACT_NONE, ACT_SUBMENU, ACT_BACK, ACT_EXIT, ACT_MODE, ACT_VIEW, ACT_RANGE, ACT_WINDOW, ACT_SMOOTH, ACT_FPS, ACT_NR, ACT_NR_LEVEL, ACT_FILTER, ACT_SHIFT, ACT_AGC, ACT_VOLUME, ACT_PPM, ACT_SOURCE, ACT_TEST_SPI, ACT_TEST_I2S, ACT_TEST_NOISE } action_t;
 typedef struct menu menu_t;
 typedef struct { const char *label; action_t act; const menu_t *sub; } item_t;
 struct menu { const char *title; const item_t *items; int n; const menu_t *parent; };
@@ -84,6 +85,7 @@ static const item_t display_items[] = {
 static const item_t system_items[] = {
     { .label = "SPI link test", .act = ACT_TEST_SPI },
     { .label = "I2S link test", .act = ACT_TEST_I2S },
+    { .label = "Noise test", .act = ACT_TEST_NOISE },   // 50 ohm vs antenna
     { .label = "Freq cal", .act = ACT_PPM },        // LO correction, ppm, edited with the encoder
     { .label = "Back", .act = ACT_BACK },
 };
@@ -96,7 +98,7 @@ static const item_t main_items[] = {
     { .label = "Exit", .act = ACT_EXIT },
 };
 static const menu_t menu_main   = { "MENU",   main_items,   6, NULL };
-static const menu_t menu_system = { "SYSTEM", system_items, 4, &menu_main };
+static const menu_t menu_system = { "SYSTEM", system_items, 5, &menu_main };
 static const menu_t menu_display = { "DISPLAY", display_items, 6, &menu_main };
 static const menu_t menu_audio   = { "AUDIO",   audio_items,   7, &menu_main };
 
@@ -335,7 +337,7 @@ static void dial_tune(int dir)
     dial_apply();
 }
 
-typedef enum { ST_MAIN, ST_MENU, ST_TEST_SPI, ST_TEST_I2S } state_t;
+typedef enum { ST_MAIN, ST_MENU, ST_TEST_SPI, ST_TEST_I2S, ST_TEST_NOISE } state_t;
 static state_t state = ST_MAIN;
 static const menu_t *cur_menu = &menu_main;
 static int cursor;
@@ -542,6 +544,103 @@ static void i2s_test_step(void)
 }
 
 // ---------------------------------------------------------------------------
+// Noise test (noise.c): band noise vs receiver noise, no PC needed.
+// Two slots kept in NVS: "50 ohm" (load on the antenna input, BPF in the
+// chain) and "Antenna". Turn / NEXT / PREV = pick the slot, SELECT = store
+// the current 2s value in it, BACK or hold = leave. Console "nz" prints them.
+// ---------------------------------------------------------------------------
+static int nz_slot;                  // 0 = 50 ohm, 1 = antenna
+static int16_t nz_val[2] = { INT16_MIN, INT16_MIN };   // dB/Hz x10, MIN = empty
+static uint32_t nz_hz[2];
+static float nz_live;
+static int nz_count;                 // finished 2s measurements since entering
+static uint8_t nz_peak;              // max ADC PEAK since the last result
+static const char *const nz_key_v[2] = { "nz_load", "nz_ant" }, *const nz_key_f[2] = { "nz_lf", "nz_af" };
+
+static void nz_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("fpgarx", NVS_READONLY, &h) != ESP_OK) return;
+    for (int i = 0; i < 2; i++) {
+        nvs_get_i16(h, nz_key_v[i], &nz_val[i]);
+        nvs_get_u32(h, nz_key_f[i], &nz_hz[i]);
+    }
+    nvs_close(h);
+}
+
+static void nz_store(int i)
+{
+    nz_val[i] = (int16_t)lroundf(nz_live * 10.0f);
+    nz_hz[i] = dial_hz;
+    nvs_handle_t h;
+    if (nvs_open("fpgarx", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_i16(h, nz_key_v[i], nz_val[i]);
+    nvs_set_u32(h, nz_key_f[i], nz_hz[i]);
+    nvs_commit(h);
+    nvs_close(h);
+    ESP_LOGI(TAG, "noise %s: %.1f dBFS/Hz at %lu Hz", i ? "antenna" : "50 ohm", nz_val[i] / 10.0f,
+             (unsigned long)nz_hz[i]);
+}
+
+static void nz_print(void)
+{
+    for (int i = 0; i < 2; i++) {
+        if (nz_val[i] == INT16_MIN) printf("NZ %s: -\n", i ? "antenna" : "load");
+        else printf("NZ %s: %.1f dBFS/Hz at %lu Hz\n", i ? "antenna" : "load", nz_val[i] / 10.0f,
+                    (unsigned long)nz_hz[i]);
+    }
+    if (nz_val[0] != INT16_MIN && nz_val[1] != INT16_MIN)
+        printf("NZ antenna - load: %+.1f dB\n", (nz_val[1] - nz_val[0]) / 10.0f);
+}
+
+static void nz_draw(void)
+{
+    char v[24];
+    snprintf(v, sizeof(v), "%.1f kHz", dial_hz / 1000.0f);
+    test_line(0, "Dial", v, C_TEXT);
+    float pk = 20.0f * log10f((nz_peak + 0.5f) / 256.0f);
+    if (nz_peak >= FPGA_PEAK_CLIP) snprintf(v, sizeof(v), "CLIP");
+    else snprintf(v, sizeof(v), "%.0f dBFS", pk);
+    test_line(1, "ADC peak", v, nz_peak >= FPGA_PEAK_CLIP ? C_FAIL : C_TEXT);
+    if (nz_count == 0) snprintf(v, sizeof(v), "measuring...");
+    else snprintf(v, sizeof(v), "%.1f  #%d", nz_live, nz_count);
+    test_line(2, "Now, dBFS/Hz", v, C_OK);
+    static const char *const lbl[2][2] = { { "  50 ohm load", "> 50 ohm load" }, { "  Antenna", "> Antenna" } };
+    for (int i = 0; i < 2; i++) {
+        if (nz_val[i] == INT16_MIN) snprintf(v, sizeof(v), "-");
+        else snprintf(v, sizeof(v), "%.1f @%luk", nz_val[i] / 10.0f, (unsigned long)(nz_hz[i] / 1000));
+        test_line(3 + i, lbl[i][nz_slot == i], v, nz_slot == i ? C_SEL_BG : C_TEXT);
+    }
+    const char *verdict = "measure both slots";
+    uint16_t col = C_DIM;
+    if (nz_val[0] != INT16_MIN && nz_val[1] != INT16_MIN) {
+        float d = (nz_val[1] - nz_val[0]) / 10.0f;
+        snprintf(v, sizeof(v), "%+.1f dB", d);
+        test_line(5, "Antenna - load", v, d >= 10 ? C_OK : d >= 3 ? C_SEL_BG : C_FAIL);
+        if (d >= 10)     { verdict = "band noise >> receiver: a better ADC adds no sensitivity"; col = C_OK; }
+        else if (d >= 3) { verdict = "receiver noise close to the band: some room to improve "; col = C_SEL_BG; }
+        else             { verdict = "receiver limits (or no antenna): ADC / LNA would help  "; col = C_FAIL; }
+    } else test_line(5, "Antenna - load", "-", C_DIM);
+    char line[64];
+    snprintf(line, sizeof(line), "%-58s", verdict);
+    lcd_text(12, AREA_Y + ROW_H + 8 + 6 * TEST_ROW_H + 6, &font_small, line, col, C_PANEL);
+}
+
+static void noise_test_enter(void)
+{
+    test_screen("NOISE TEST");
+    lcd_text(8, LCD_H - 16, &font_small, "turn = slot, SELECT = save value, BACK = leave", C_DIM, C_PANEL);
+    noise_reset();
+    nz_count = 0;
+    nz_peak = 0;
+    if (!fpga_present) {
+        test_line(2, "Now, dBFS/Hz", "no FPGA", C_FAIL);
+        return;
+    }
+    nz_draw();
+}
+
+// ---------------------------------------------------------------------------
 // Power-up self-test (serial log only)
 // ---------------------------------------------------------------------------
 static bool link_selftest(void)   // true = all PASS
@@ -729,6 +828,7 @@ static void menu_select(void)
     case ACT_SOURCE:   src_fpga = !src_fpga; spectrum_floor_reset(); dial_save(); draw_menu(); break;
     case ACT_TEST_SPI: state = ST_TEST_SPI; spi_test_enter(); break;
     case ACT_TEST_I2S: state = ST_TEST_I2S; i2s_test_enter(); break;
+    case ACT_TEST_NOISE: state = ST_TEST_NOISE; noise_test_enter(); break;
     default: break;
     }
 }
@@ -779,6 +879,8 @@ static void console_poll(void)
             dial_save();
             enter_main();
             printf("OK defaults\n");
+        } else if (strcmp(line, "nz") == 0) {
+            nz_print();
         } else if (strcmp(line, "lcd") == 0) {
             printf("lcd m %02X i %d\n", lcd_get_madctl(), lcd_get_invert());
         } else if (line[0]) printf("ERR %s\n", line);
@@ -812,6 +914,7 @@ void app_main(void)
         nvs_flash_init();
     }
     dial_load();
+    nz_load();
     lcd_init();
     splash_show();                     // Jessica, while the link self-test runs
     lcd_backlight(100);
@@ -962,6 +1065,28 @@ void app_main(void)
                 else i2s_test_step();
             }
             vTaskDelay(pdMS_TO_TICKS(10));
+            break;
+
+        case ST_TEST_NOISE:
+            if (ev == EV_HOLD || ev == EV_BACK) { enter_menu(&menu_system, 2); break; }
+            console_poll();
+            if (!fpga_present) { vTaskDelay(pdMS_TO_TICKS(10)); break; }
+            if (enc || ev == EV_NEXT || ev == EV_PREV) { nz_slot ^= 1; nz_draw(); }
+            if (ev == EV_SELECT && nz_count > 0) { nz_store(nz_slot); nz_draw(); }
+            if (now - t_adc > 100000) {
+                t_adc = now;
+                uint8_t p = fpga_read(FPGA_REG_PEAK);
+                if (p > nz_peak) nz_peak = p;
+            }
+            if (fpga_iq_block(iq, SPEC_FFT_N)) {
+                float db;
+                if (noise_add(iq, &db)) {
+                    nz_live = db;
+                    nz_count++;
+                    nz_draw();
+                    nz_peak = 0;
+                }
+            } else vTaskDelay(1);
             break;
         }
     }

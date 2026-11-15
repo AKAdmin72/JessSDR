@@ -11,6 +11,10 @@ current. Styles 1-5 = her photo cutout (`jessica_cutout.png`, cv2.grabCut)
 as photo/cartoon/oil/pencil/pixel. -> `esp32/main/splash_img.h` (palette +
 RLE, ~90 KB), shown by splash.c during the link self-test (>= 2.5 s).
 Display turned 180 deg 2026-11-10: MADCTL 0x28 (was 0xE8).
+Noise test (2026-11-15, NOT yet run on hardware): MENU > System > Noise test
+(noise.c): wide-I/Q floor in dBFS/Hz (Hann FFT 1024, 200 frames, 10th
+percentile of +-26 kHz), slots "50 ohm"/"Antenna" in NVS (nz_load/nz_ant),
+difference + verdict on screen, console `nz`. No PC needed at the antenna.
 Main panel view (2026-11-15, menu Display > View, NVS "view"): SPECTRUM
 (default, 254 px) / WATERFALL (254 px, dashed red dial line) / BOTH (120+134);
 waterfall ring is 254 rows in PSRAM, always filled -> no history lost on switch.
