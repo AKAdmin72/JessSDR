@@ -94,6 +94,12 @@ logs 213303/213304), four parts on the module's AD8138 stage were changed:
 | RF (×2) | 200 Ω | **2.2 kΩ** | feedback, gain = RF/RG + 1 |
 | RBAL | 50 Ω | **22 Ω** | re-balances the −IN side: 62 ‖ 50 = 27.7 Ω |
 
+The input stage as built, cut from the KiCad schematic
+([`hardware/jesssdr/jesssdr.pdf`](hardware/jesssdr/jesssdr.pdf)). The
+notes on it are in Russian: «было» means "stock".
+
+![AD9226 input stage, AD8138 mod (KiCad)](docs/img/ad9226_mod.png)
+
 Results:
 - Gain = 2200/360 + 1 = 7.11 (+17.0 dB). That is **+25.4 dB** better than
   stock.
