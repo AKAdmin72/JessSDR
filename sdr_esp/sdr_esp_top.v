@@ -52,7 +52,7 @@ module sdr_esp_top #(
     output wire        esp_ws,
     output wire        esp_data
 );
-    localparam [7:0] VERSION = 8'd7;   // 6: VOL, AGC, programmable filter (2026-11-15); 7: audio_up4 (2026-11-21)
+    localparam [7:0] VERSION = 8'd8;   // 6: VOL, AGC, programmable filter (2026-11-15); 7: audio_up4 (2026-11-21); 8: CLIP 0x1F (2026-11-22)
     assign pa_en = 1'b1;                       // MAX98357A SD_MODE high = on (left)
 
     // ================= clock =================
@@ -106,6 +106,10 @@ module sdr_esp_top #(
     always @(posedge sclk) pk_cur <= pk_last ? 8'd0 : pk_nx;
     always @(posedge sclk) if (pk_last) adc_peak <= pk_nx;
 
+    // clipped samples (rail or OTR) per peak window, log2-coded -> spi_regs CLIP
+    wire [7:0] adc_clip_log;
+    adc_clip #(.W(PEAK_WIN)) u_clip (.clk(sclk), .d(d_q), .otr(otr_q), .win_last(pk_last), .clip_log(adc_clip_log));
+
     // ================= ESP SPI registers =================
     wire [7:0]  esp_ctrl;
     wire [31:0] esp_freq_bcd;
@@ -129,7 +133,7 @@ module sdr_esp_top #(
         .vol(esp_vol), .agc(esp_agc), .cf_we(cf_we), .cf_waddr(cf_waddr), .cf_wdata(cf_wdata),
         .lo_fw(phase_inc), .lo_shift_k(4'sd0),
         .iqc_c1(18'd0), .iqc_c2(18'd0), .iqc_stat(2'd0),
-        .adc_peak(adc_peak), .level(level), .btn(btn)
+        .adc_peak(adc_peak), .adc_clip(adc_clip_log), .level(level), .btn(btn)
     );
 
     // FREQ (8 BCD digits) -> binary Hz: acc = acc * 10 + digit, MSD first

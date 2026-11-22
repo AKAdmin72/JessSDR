@@ -10,7 +10,9 @@
 #include <stdbool.h>
 
 typedef enum { EV_NONE, EV_NEXT, EV_PREV, EV_SELECT, EV_HOLD, EV_BACK,
-               EV_SQL } input_ev_t;   // EV_SQL: Tang S1 long on the main screen (main.c)
+               EV_SQL,     // Tang S2 short on the main screen: squelch threshold (main.c)
+               EV_EXIT     // Tang S2 long outside the main screen: straight back to it
+             } input_ev_t;
 
 void       input_init(void);
 input_ev_t input_get(void);   // button events, non-blocking

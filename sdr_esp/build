@@ -15,7 +15,7 @@ mkdir -p "$P/build_out"
 TCL="$P/build_out/sdr_esp.tcl"
 {
     echo "create_project -name sdr_esp -dir $P/build_out -pn GW2AR-LV18QN88C8/I7 -device_version C -force"
-    for f in sdr_esp_top.v buttons.v spi_regs.v i2s_link_clk.v iq_i2s_tx.v am_demod.v audio_nr.v ssb_demod.v audio_agc.v audio_up4.v sdr_esp.cst sdr_esp.sdc; do
+    for f in sdr_esp_top.v buttons.v spi_regs.v i2s_link_clk.v iq_i2s_tx.v am_demod.v audio_nr.v ssb_demod.v audio_agc.v audio_up4.v adc_clip.v sdr_esp.cst sdr_esp.sdc; do
         echo "add_file $P/$f"
     done
     for f in ddc.v audio_i2s.v level_meter.v uart_tx.v uart_rx.v; do

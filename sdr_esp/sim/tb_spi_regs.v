@@ -17,7 +17,7 @@ module tb_spi_regs;
                   .spi_miso(miso), .ctrl(ctrl), .freq_bcd(freq_bcd), .freq_set(freq_set),
                   .mode(mode), .mode_set(mode_set), .nr(nr),
                   .lo_fw(lo_fw), .lo_shift_k(lo_k),
-                  .iqc_c1(18'h2A5C7), .iqc_c2(18'h10004), .iqc_stat(2'b11), .adc_peak(8'hF3), .level(8'h9C), .btn(8'hB4));
+                  .iqc_c1(18'h2A5C7), .iqc_c2(18'h10004), .iqc_stat(2'b11), .adc_peak(8'hF3), .adc_clip(8'h05), .level(8'h9C), .btn(8'hB4));
     wire [1:0] mode;
     wire       mode_set;
     wire [3:0] nr;

@@ -32,10 +32,15 @@ enum { SPEC_WIN_OFF, SPEC_WIN_HANN, SPEC_WIN_BH, SPEC_WIN_N };
 void spectrum_set_view(int range_db, int window);
 // S-meter, dBm: power in the demodulator passband (FFT), peak-reading.
 float spectrum_smeter_dbm(void);
-// Main panel layout: spectrum only (default), waterfall only, or both.
-// Takes effect with the next frame; call enter_main/spectrum_draw_static after.
+// Main panel layout: spectrum only (default), waterfall only, or both;
+// both_spec_h = spectrum height in BOTH (40..214 px, the waterfall gets the
+// rest of the 254). Takes effect with the next frame; call
+// enter_main/spectrum_draw_static after.
 enum { SPEC_VIEW_SPECTRUM, SPEC_VIEW_WATERFALL, SPEC_VIEW_BOTH, SPEC_VIEW_N };
-void spectrum_set_layout(int view);
+void spectrum_set_layout(int view, int both_spec_h);
+// Waterfall speed: one row per div frames (1 = every frame, ~32 rows/s),
+// the row = mean of those frames.
+void spectrum_set_wf_speed(int div);
 // Restart the noise-floor estimate (fast ~1s settle), e.g. after a source change.
 void spectrum_floor_reset(void);
 // [1 2 1]/4 smoothing across frequency on the spectrum trace (not the waterfall).
@@ -45,8 +50,9 @@ void spectrum_set_smooth(bool on);
 void spectrum_set_scroll(bool on);
 // Frame rate readout in the header on/off.
 void spectrum_show_fps(bool on);
-// ADC overload: clip = clipped within the last second; peak in dBFS (yellow above -6)
-void spectrum_set_adc(bool clip, float peak_dbfs);
+// ADC overload: clip = within the last second 0 none, 1 rare clipped samples
+// (orange CLIP), 2 steady clipping (red CLIP); peak in dBFS (yellow above -6)
+void spectrum_set_adc(int clip, float peak_dbfs);
 // One frame. iq = SPEC_FFT_N interleaved I/Q floats, or NULL for the built-in
 // synthetic signal. src_name (4 chars) is shown in the header corner.
 void spectrum_step(const float *iq, const char *src_name);
@@ -57,6 +63,10 @@ void spectrum_feed(const float *iq);
 // to the current dial, no new waterfall row.
 void spectrum_hold(void);
 
+// S-meter calibration (serial console "sm [frames]"): mean passband power
+// over N frames (not peak-held) + min/max + noise in the passband, printed once.
+void spectrum_sm_start(int frames);
+bool spectrum_sm_dump(void);
 // Debug (serial console): average N frames of FFT bin power, then print them.
 void spectrum_capture_start(int frames);
 bool spectrum_capture_dump(void);     // true once, when the capture is printed

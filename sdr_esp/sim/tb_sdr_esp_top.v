@@ -115,7 +115,7 @@ module tb_sdr_esp_top;
     initial begin
         #2000;
         rd(7'h00, v); expect8(v, 8'h5A, "ID");
-        rd(7'h01, v); expect8(v, 8'h07, "VERSION");
+        rd(7'h01, v); expect8(v, 8'h08, "VERSION");
         wr(7'h02, 8'hA5); rd(7'h02, v); expect8(v, 8'hA5, "SCRATCH");
         // tune away and back: 14.074 MHz, then 7.100 MHz
         wr_freq(32'h14074000); #2000;
@@ -156,6 +156,9 @@ module tb_sdr_esp_top;
         rd(7'h14, v);
         if (v < 8'd36 || v > 8'd38) begin $display("FAIL: PEAK %0d, expected ~37", v); errors = errors + 1; end
         else $display("PEAK %0d", v);
+        rd(7'h1F, v);   // CLIP: amplitude 300 never reaches a rail
+        if (v != 8'd0) begin $display("FAIL: CLIP %0d, expected 0", v); errors = errors + 1; end
+        else $display("CLIP 0");
 
         // wide I/Q: let the CIC settle, then 1024 frames
         #2000000; collect = 1;
@@ -174,7 +177,7 @@ module tb_sdr_esp_top;
         if (fa < 900 || fa > 1100 || amax < 1000) begin $display("FAIL: LSB audio"); errors = errors + 1; end
         if (v == 0) begin $display("FAIL: LEVEL 0"); errors = errors + 1; end
 
-        if (errors == 0) $display("PASS: sdr_esp_top - SPI regs, BCD tuning, I2S pattern + I/Q, PEAK, LSB audio");
+        if (errors == 0) $display("PASS: sdr_esp_top - SPI regs, BCD tuning, I2S pattern + I/Q, PEAK, CLIP, LSB audio");
         else $display("FAIL: %0d errors", errors);
         $finish;
     end

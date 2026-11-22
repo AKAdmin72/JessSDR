@@ -59,7 +59,7 @@ static const char *TAG = "jesssdr";   // (the NVS namespace stays "fpgarx": save
 // ---------------------------------------------------------------------------
 // Menu tree
 // ---------------------------------------------------------------------------
-typedef enum { ACT_NONE, ACT_SUBMENU, ACT_BACK, ACT_EXIT, ACT_MODE, ACT_VIEW, ACT_RANGE, ACT_WINDOW, ACT_SMOOTH, ACT_SCROLL, ACT_FPS, ACT_NR, ACT_NR_LEVEL, ACT_FILTER, ACT_SHIFT, ACT_AGC, ACT_VOLUME, ACT_SQL, ACT_PPM, ACT_SOURCE, ACT_TEST_SPI, ACT_TEST_I2S, ACT_TEST_NOISE } action_t;
+typedef enum { ACT_NONE, ACT_SUBMENU, ACT_BACK, ACT_EXIT, ACT_MODE, ACT_VIEW, ACT_RANGE, ACT_WINDOW, ACT_SMOOTH, ACT_SCROLL, ACT_WFSPD, ACT_FPS, ACT_NR, ACT_NR_LEVEL, ACT_FILTER, ACT_SHIFT, ACT_AGC, ACT_VOLUME, ACT_SQL, ACT_PPM, ACT_SOURCE, ACT_TEST_SPI, ACT_TEST_I2S, ACT_TEST_NOISE } action_t;
 typedef struct menu menu_t;
 typedef struct { const char *label; action_t act; const menu_t *sub; } item_t;
 struct menu { const char *title; const item_t *items; int n; const menu_t *parent; };
@@ -76,11 +76,12 @@ static const item_t audio_items[] = {
     { .label = "Back", .act = ACT_BACK },
 };
 static const item_t display_items[] = {
-    { .label = "View", .act = ACT_VIEW },       // ": SPECTRUM" / ": WATERFALL" / ": BOTH"
+    { .label = "View", .act = ACT_VIEW },       // ": SPECTRUM" / ": WATERFALL" / ": BOTH 160/94" ...
     { .label = "Range", .act = ACT_RANGE },     // ": 40 dB"
     { .label = "Window", .act = ACT_WINDOW },   // ": OFF" / ": HANN" / ": BH"
     { .label = "Smooth", .act = ACT_SMOOTH },   // ": ON" / ": OFF"
     { .label = "Retune", .act = ACT_SCROLL },   // ": SCROLL" / ": STATIC"
+    { .label = "WF speed", .act = ACT_WFSPD },  // ": 1/1" / ": 1/2" / ": 1/3" rows per frame
     { .label = "FPS", .act = ACT_FPS },         // ": ON" / ": OFF"
     { .label = "Back", .act = ACT_BACK },
 };
@@ -101,7 +102,7 @@ static const item_t main_items[] = {
 };
 static const menu_t menu_main   = { "MENU",   main_items,   6, NULL };
 static const menu_t menu_system = { "SYSTEM", system_items, 5, &menu_main };
-static const menu_t menu_display = { "DISPLAY", display_items, 7, &menu_main };
+static const menu_t menu_display = { "DISPLAY", display_items, 8, &menu_main };
 static const menu_t menu_audio   = { "AUDIO",   audio_items,   8, &menu_main };
 
 static bool src_fpga = true;   // spectrum input: false = synthetic, true = FPGA I2S (kept in NVS)
@@ -110,6 +111,12 @@ static const uint8_t range_db[] = { 20, 30, 40, 60 };
 static int range_idx = 2;
 static int view_sel = SPEC_VIEW_SPECTRUM;   // main panel: spectrum / waterfall / both
 static const char *const view_name[] = { "SPECTRUM", "WATERFALL", "BOTH" };
+// BOTH: spectrum / waterfall heights (panel 254 px, grid 20 px), kept in NVS
+static const uint8_t split_spec[] = { 160, 140, 120 };
+static int split_idx = 0;
+// waterfall: one row per wf_div[] frames (row = their mean), kept in NVS
+static const uint8_t wf_div[] = { 1, 2, 3 };
+static int wfspd_idx = 0;
 static int win_sel = SPEC_WIN_OFF;   // FFT window: OFF / HANN / BH (OFF = user preference)
 static const char *const win_name[] = { "OFF", "HANN", "BH" };
 static bool fpga_present;      // the FPGA answered with FPGA_ID at power-up
@@ -128,24 +135,35 @@ static uint8_t nr_reg(void) { return nr_mode | (3 - nr_level) << 2; }
 // No I/Q correction: the DDC I/Q are digital, so perfectly balanced.
 static uint8_t ctrl_base(void) { return 0; }
 
-// ADC overload (adc_peak.v): the FPGA keeps the max |I|,|Q| of the raw
-// samples over 0.31s windows; read every 100ms so no window is missed. The
-// header shows CLIP for 1s after a clipped window, else the highest peak of
-// the last second if it is above -6dBFS.
+// ADC overload: the FPGA keeps, per 0.26s window, the max |code-2048|
+// (PEAK) and, from VERSION 8, the number of clipped samples (CLIP, code at
+// a rail or OTR, log2-coded); read every 100ms so no window is missed.
+// Header for 1s after the window: red CLIP = steady clipping (>= 16
+// samples per window), orange = rare single peaks (1..15, harmless in
+// practice), else the highest peak of the last second if above -6dBFS.
+// An older FPGA (no CLIP register): red CLIP when PEAK >= -0.6dBFS.
+#define CLIP_STEADY_LOG 5     // CLIP >= 5: >= 16 clipped samples in 0.26s
 static void adc_status(int64_t now)
 {
-    static int64_t t_clip = -10000000, t_pk, t_log;
-    static uint8_t pk_hold;
+    static int64_t t_clip = -10000000, t_pk, t_log, t_ver = -10000000;
+    static uint8_t pk_hold, ver, cl_hold;
+    if (now - t_ver > 1000000) { t_ver = now; ver = fpga_read(FPGA_REG_VERSION); }   // follows an FPGA reload
     uint8_t p = fpga_read(FPGA_REG_PEAK);
-    if (p >= FPGA_PEAK_CLIP) {
+    uint8_t cl = ver >= 8 ? fpga_read(FPGA_REG_CLIP) : p >= FPGA_PEAK_CLIP ? CLIP_STEADY_LOG : 0;
+    if (cl) {
         if (now - t_clip > 1000000 && now - t_log > 1000000) {
             t_log = now;
-            ESP_LOGW(TAG, "ADC CLIP (peak %u/255) - too much gain / signal", p);
+            if (ver >= 8)
+                ESP_LOGW(TAG, "ADC CLIP: %u..%u samples / 0.26s (peak %u/255)%s", 1u << (cl - 1), (1u << cl) - 1, p,
+                         cl >= CLIP_STEADY_LOG ? " - too much gain / signal" : " - rare peaks");
+            else ESP_LOGW(TAG, "ADC CLIP (peak %u/255) - too much gain / signal", p);
         }
+        if (cl >= cl_hold || now - t_clip > 1000000) cl_hold = cl;
         t_clip = now;
     }
     if (p >= pk_hold || now - t_pk > 1000000) { pk_hold = p; t_pk = now; }
-    spectrum_set_adc(now - t_clip < 1000000, 20.0f * log10f((pk_hold + 0.5f) / 256.0f));
+    int lvl = now - t_clip >= 1000000 ? 0 : cl_hold >= CLIP_STEADY_LOG ? 2 : 1;
+    spectrum_set_adc(lvl, 20.0f * log10f((pk_hold + 0.5f) / 256.0f));
     // S-meter: FFT power in the passband (spectrum.c); the FPGA's LEVEL
     // register measures the whole +-6kHz decimator stream (neighbours too)
     spectrum_set_smeter(spectrum_smeter_dbm());
@@ -305,6 +323,8 @@ static void dial_load(void)
     if (nvs_get_i16(h, "shift", &i16) == ESP_OK && i16 >= -1000 && i16 <= 1000) if_shift = i16;
     if (nvs_get_i16(h, "ppm10", &i16) == ESP_OK && i16 >= -1000 && i16 <= 1000) ppm_x10 = i16;
     if (nvs_get_u8(h, "view", &st) == ESP_OK && st < SPEC_VIEW_N) view_sel = st;
+    if (nvs_get_u8(h, "split", &st) == ESP_OK && st < sizeof(split_spec)) split_idx = st;
+    if (nvs_get_u8(h, "wfspd", &st) == ESP_OK && st < sizeof(wf_div)) wfspd_idx = st;
     if (nvs_get_u8(h, "range", &st) == ESP_OK && st < sizeof(range_db)) range_idx = st;
     if (nvs_get_u8(h, "win", &st) == ESP_OK && st < SPEC_WIN_N) win_sel = st;
     if (nvs_get_u8(h, "fps", &st) == ESP_OK) fps_on = st;
@@ -331,6 +351,8 @@ static void dial_save(void)
     nvs_set_i16(h, "shift", if_shift);
     nvs_set_i16(h, "ppm10", ppm_x10);
     nvs_set_u8(h, "view", view_sel);
+    nvs_set_u8(h, "split", split_idx);
+    nvs_set_u8(h, "wfspd", wfspd_idx);
     nvs_set_u8(h, "range", range_idx);
     nvs_set_u8(h, "win", win_sel);
     nvs_set_u8(h, "fps", fps_on);
@@ -442,11 +464,14 @@ static bool squelch_update(int64_t now)   // true = there was a new frame
     return true;
 }
 
-// Tang buttons S1/S2 as a stand-in for the encoder (sdr_esp buttons.v):
-// the FPGA counts short/long presses (2-bit counters), polled every 30ms.
-//   S1 short = NEXT (tune up / move down)   S1 long = squelch threshold on the
-//                                           main screen (encoder, 3s), else SELECT
-//   S2 short = PREV (tune down / move up)   S2 long = menu on the main screen, else BACK
+// Tang buttons S1/S2 (sdr_esp buttons.v): the FPGA counts short/long
+// presses (2-bit counters), polled every 30ms. The dial and the menu
+// cursor are on the encoder only (2026-11-22; no ESP buttons are wired).
+//   main screen: S1 short = step (10Hz..1MHz round)  S1 long = volume (encoder, 3s)
+//                S2 short = squelch (encoder, 5s)     S2 long = menu
+//                in volume / squelch: S1 short = done
+//   elsewhere:   S1 short / long = SELECT            S2 short = BACK
+//                S2 long = exit to the main screen
 static input_ev_t tang_buttons(int64_t now)
 {
     static int64_t t_poll;
@@ -459,7 +484,10 @@ static input_ev_t tang_buttons(int64_t now)
     t_poll = now;
     uint8_t b = fpga_read(FPGA_REG_BTN);
     if (!have) { last = b; have = true; return EV_NONE; }
-    const input_ev_t map[4] = { EV_NEXT, state == ST_MAIN ? EV_SQL : EV_SELECT, EV_PREV, state == ST_MAIN ? EV_HOLD : EV_BACK };
+    // {S1 short, S1 long, S2 short, S2 long}; main: SELECT = step, BACK = volume
+    static const input_ev_t map_main[4] = { EV_SELECT, EV_BACK, EV_SQL, EV_HOLD };
+    static const input_ev_t map_menu[4] = { EV_SELECT, EV_SELECT, EV_BACK, EV_EXIT };
+    const input_ev_t *map = state == ST_MAIN ? map_main : map_menu;
     for (int i = 3; i >= 0; i--)
         for (int d = ((b >> (2 * i)) - (last >> (2 * i))) & 3; d > 0; d--) pend[np++] = map[i];
     last = b;
@@ -483,7 +511,10 @@ static void draw_menu(void)
             snprintf(s, sizeof(s), "%s: %s", it->label, !src_fpga ? "SIM" : fpga_present ? "FPGA" : "FPGA (absent: SIM)");
         else if (it->act == ACT_MODE && mode_sel == MODE_AUTO)
             snprintf(s, sizeof(s), "%s: AUTO (%s)", it->label, mode_name[cur_mode < 0 ? 0 : cur_mode]);
+        else if (it->act == ACT_VIEW && view_sel == SPEC_VIEW_BOTH)
+            snprintf(s, sizeof(s), "%s: BOTH %d/%d", it->label, split_spec[split_idx], 254 - split_spec[split_idx]);
         else if (it->act == ACT_VIEW) snprintf(s, sizeof(s), "%s: %s", it->label, view_name[view_sel]);
+        else if (it->act == ACT_WFSPD) snprintf(s, sizeof(s), "%s: 1/%d", it->label, wf_div[wfspd_idx]);
         else if (it->act == ACT_RANGE) snprintf(s, sizeof(s), "%s: %d dB", it->label, range_db[range_idx]);
         else if (it->act == ACT_NR) snprintf(s, sizeof(s), "%s: %s", it->label, nr_name[nr_mode]);
         else if (it->act == ACT_NR_LEVEL) snprintf(s, sizeof(s), "%s: %d", it->label, nr_level + 1);
@@ -511,13 +542,15 @@ static void draw_menu(void)
         else if (it->act == ACT_PPM) snprintf(s, sizeof(s), "%s: %+.1f ppm", it->label, ppm_x10 / 10.0f);
         else snprintf(s, sizeof(s), "%s%s", it->label, it->act == ACT_SUBMENU ? " >" : "");
         bool sel = (i == cursor);
-        int y = AREA_Y + ROW_H + 8 + i * (ROW_H + 4);
+        // 30 px pitch; 8 rows squeeze to 27 so the last one clears the hint line
+        int pitch = cur_menu->n > 7 ? ROW_H + 1 : ROW_H + 4;
+        int y = AREA_Y + ROW_H + 8 + i * pitch;
         uint16_t bg = sel ? (editing ? C_EDIT_BG : C_SEL_BG) : C_PANEL;
         lcd_fill(12, y, LCD_W - 24, ROW_H, bg);
         lcd_text(24, y + 3, &font_mid, s, sel ? C_SEL_FG : C_TEXT, bg);
     }
-    lcd_text(8, LCD_H - 16, &font_small, editing ? "turn = change value, SELECT / BACK = done     "
-                                                  : "turn = move, SELECT = change, BACK = up      ", C_DIM, C_PANEL);
+    lcd_text(8, LCD_H - 16, &font_small, editing ? "turn = change value, S1 / S2 = done           "
+                                                  : "turn = move, S1 = select, S2 = back (hold: exit)", C_DIM, C_PANEL);
 }
 
 // A test screen line: label in the left column, value in the right column.
@@ -534,7 +567,7 @@ static void test_screen(const char *title)
 {
     draw_title(title);
     lcd_fill(0, AREA_Y + ROW_H, LCD_W, AREA_H - ROW_H, C_PANEL);
-    lcd_text(8, LCD_H - 16, &font_small, "hold BOOT (or BACK) to leave", C_DIM, C_PANEL);
+    lcd_text(8, LCD_H - 16, &font_small, "S2 = back, hold S2 = main screen", C_DIM, C_PANEL);
 }
 
 // ---------------------------------------------------------------------------
@@ -705,7 +738,7 @@ static void nz_draw(void)
 static void noise_test_enter(void)
 {
     test_screen("NOISE TEST");
-    lcd_text(8, LCD_H - 16, &font_small, "turn = slot, SELECT = save value, BACK = leave", C_DIM, C_PANEL);
+    lcd_text(8, LCD_H - 16, &font_small, "turn = slot, S1 = save value, S2 = leave      ", C_DIM, C_PANEL);
     noise_reset();
     nz_count = 0;
     nz_peak = 0;
@@ -838,9 +871,16 @@ static void menu_select(void)
         dial_save();
         draw_menu();         // so the menu goes back on top
         break;
-    case ACT_VIEW:     // SPECTRUM -> WATERFALL -> BOTH -> SPECTRUM
-        view_sel = (view_sel + 1) % SPEC_VIEW_N;
-        spectrum_set_layout(view_sel);   // seen on Exit (enter_main clears the panel)
+    case ACT_VIEW:     // SPECTRUM -> WATERFALL -> BOTH 160 -> 140 -> 120 -> SPECTRUM
+        if (view_sel != SPEC_VIEW_BOTH) { view_sel++; split_idx = 0; }
+        else if (++split_idx >= (int)sizeof(split_spec)) { view_sel = SPEC_VIEW_SPECTRUM; split_idx = 0; }
+        spectrum_set_layout(view_sel, split_spec[split_idx]);   // seen on Exit (enter_main clears the panel)
+        dial_save();
+        draw_menu();
+        break;
+    case ACT_WFSPD:    // 1/1 -> 1/2 -> 1/3 -> 1/1
+        wfspd_idx = (wfspd_idx + 1) % sizeof(wf_div);
+        spectrum_set_wf_speed(wf_div[wfspd_idx]);
         dial_save();
         draw_menu();
         break;
@@ -940,6 +980,9 @@ static void console_poll(void)
             dial_hz = v;
             dial_apply();
             printf("OK f %lu\n", (unsigned long)dial_hz);
+        } else if (strncmp(line, "sm", 2) == 0 && (line[2] == 0 || line[2] == ' ')) {   // "sm [frames]", default 64 (~2 s)
+            if (sscanf(line, "sm %ld", &v) != 1 || v < 1 || v > 10000) v = 64;
+            spectrum_sm_start(v);
         } else if (sscanf(line, "s %ld", &v) == 1 && v > 0 && v <= 1000) {
             spectrum_capture_start(v);
         } else if (sscanf(line, "lcd m %lx", &v) == 1 && v >= 0 && v <= 0xFF) {
@@ -952,7 +995,8 @@ static void console_poll(void)
         } else if (strcmp(line, "defaults") == 0) {   // menu settings -> defaults, dial/step kept
             src_fpga = true; mode_sel = MODE_AUTO; range_idx = 2; view_sel = SPEC_VIEW_SPECTRUM;
             ssb_bw_idx = 1; cw_bw_idx = 1; if_shift = 0; agc_speed = FPGA_AGC_MED; vol_idx = 20; sql_db = 0;   // ppm kept
-            spectrum_set_layout(view_sel); win_sel = SPEC_WIN_OFF; fps_on = false; smooth_on = true;
+            split_idx = 0; wfspd_idx = 0; spectrum_set_wf_speed(wf_div[wfspd_idx]);
+            spectrum_set_layout(view_sel, split_spec[split_idx]); win_sel = SPEC_WIN_OFF; fps_on = false; smooth_on = true;
             spectrum_set_smooth(smooth_on);
             scroll_on = true; spectrum_set_scroll(scroll_on);
             nr_mode = FPGA_NR_OFF; nr_level = 1;
@@ -1010,7 +1054,8 @@ void app_main(void)
     int64_t t_splash = esp_timer_get_time();
     spectrum_init();
     spectrum_set_view(range_db[range_idx], win_sel);
-    spectrum_set_layout(view_sel);
+    spectrum_set_layout(view_sel, split_spec[split_idx]);
+    spectrum_set_wf_speed(wf_div[wfspd_idx]);
     spectrum_set_smooth(smooth_on);
     spectrum_set_scroll(scroll_on);
     fpga_init();
@@ -1080,12 +1125,12 @@ void app_main(void)
         switch (state) {
         case ST_MAIN:
             if (ev == EV_HOLD) { vol_mode_set(false); sql_mode_set(false); enter_menu(&menu_main, 0); break; }
-            // BACK: the encoder sets the volume (header shows it) until BACK
-            // again or 3s without a change
+            // BACK (Tang S1 long): the encoder sets the volume (header shows it)
+            // until BACK again, SELECT (S1 short) or 3s without a change
             if (ev == EV_BACK) { sql_mode_set(false); vol_mode_set(!vol_mode); t_vol = now; }
-            // Tang S1 long: the encoder sets the squelch threshold (header:
-            // "SQ nn" + live SNR bar, tick = threshold) until S1 long / SELECT
-            // / BACK or 5s without a change
+            // Tang S2 short: the encoder sets the squelch threshold (header:
+            // "SQ nn" + live SNR bar, tick = threshold) until S2 short again,
+            // SELECT (S1 short), BACK or 5s without a change
             if (ev == EV_SQL) { vol_mode_set(false); sql_mode_set(!sql_mode); t_vol = now; }
             if (sql_mode) {
                 int d = enc + (ev == EV_NEXT) - (ev == EV_PREV);
@@ -1103,7 +1148,7 @@ void app_main(void)
                     nvs_dirty = true;
                     t_last_tune = t_vol = now;
                 }
-                if (now - t_vol > 3000000) vol_mode_set(false);
+                if (ev == EV_SELECT || now - t_vol > 3000000) { vol_mode_set(false); ev = EV_NONE; }   // SELECT = done, not a step change
             } else {
                 if (ev == EV_NEXT) dial_tune(+1);
                 if (ev == EV_PREV) dial_tune(-1);
@@ -1118,6 +1163,7 @@ void app_main(void)
             if (fpga_present && now - t_adc > 100000) { t_adc = now; adc_status(now); }
             console_poll();
             spectrum_capture_dump();
+            spectrum_sm_dump();
             if (src_fpga && fpga_present) {
                 int r = fpga_iq_block(iq, SPEC_FFT_N);
                 if (r == FPGA_IQ_OK) spectrum_step(iq, "FPGA");
@@ -1137,7 +1183,7 @@ void app_main(void)
                 action_t a = cur_menu->items[cursor].act;
                 int d = enc + (ev == EV_NEXT) - (ev == EV_PREV);
                 if (d) { edit_adjust(a, d); draw_menu(); }
-                if (ev == EV_SELECT || ev == EV_HOLD || ev == EV_BACK) {
+                if (ev == EV_SELECT || ev == EV_HOLD || ev == EV_BACK || ev == EV_EXIT) {
                     editing = false;
                     mode_show();   // passband after a shift (the ruler sits under the title)
                     dial_save();
@@ -1153,6 +1199,7 @@ void app_main(void)
                 if (cur_menu->parent) enter_menu(cur_menu->parent, 0);
                 else enter_main();
             }
+            else if (ev == EV_EXIT) enter_main();
             else if (enc) {
                 cursor = ((cursor + enc) % cur_menu->n + cur_menu->n) % cur_menu->n;
                 draw_menu();
@@ -1162,9 +1209,10 @@ void app_main(void)
 
         case ST_TEST_SPI:
         case ST_TEST_I2S:
-            if (ev == EV_SELECT || ev == EV_HOLD || ev == EV_BACK) {
+            if (ev == EV_SELECT || ev == EV_HOLD || ev == EV_BACK || ev == EV_EXIT) {
                 if (state == ST_TEST_I2S) i2s_test_leave();
-                enter_menu(&menu_system, state == ST_TEST_SPI ? 0 : 1);
+                if (ev == EV_EXIT) enter_main();
+                else enter_menu(&menu_system, state == ST_TEST_SPI ? 0 : 1);
                 break;
             }
             if (esp_timer_get_time() - t_test > 300000) {
@@ -1177,6 +1225,7 @@ void app_main(void)
 
         case ST_TEST_NOISE:
             if (ev == EV_HOLD || ev == EV_BACK) { enter_menu(&menu_system, 2); break; }
+            if (ev == EV_EXIT) { enter_main(); break; }
             console_poll();
             if (!fpga_present) { vTaskDelay(pdMS_TO_TICKS(10)); break; }
             if (enc || ev == EV_NEXT || ev == EV_PREV) { nz_slot ^= 1; nz_draw(); }

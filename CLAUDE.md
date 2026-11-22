@@ -18,6 +18,14 @@ difference + verdict on screen, console `nz`. No PC needed at the antenna.
 Main panel view (2026-11-15, menu Display > View, NVS "view"): SPECTRUM
 (default, 254 px) / WATERFALL (254 px, dashed red dial line) / BOTH (120+134);
 waterfall ring is 254 rows in PSRAM, always filled -> no history lost on switch.
+2026-11-22 Tang buttons (no ESP buttons wired, dial/menu cursor = encoder
+only), main.c tang_buttons(): main S1 short = step, S1 long = volume, S2
+short = squelch, S2 long = menu; in vol/sql S1 short = done; menus/tests
+S1 = SELECT, S2 short = BACK, S2 long = EV_EXIT (to main).
+2026-11-22: BOTH split in View: BOTH 160/94 (default) -> 140/114 -> 120/134
+(NVS "split"); Display > WF speed 1/1,1/2,1/3 = one wf row per 1..3 frames,
+row = mean of rel dB (wf_acc, shifted in state_follow; NVS "wfspd"). Menus
+with 8 items use 27 px pitch (last row used to sit under the hint line).
 Retune without smear (2026-11-19): spectrum.c
 state_follow() shifts px_avg/px_wf/est by whole pixels to the new centre
 (st_center), edge columns "cold" until a fresh frame; waterfall rows keep
@@ -40,7 +48,7 @@ Squelch (2026-11-19, variant 2 of docs/squelch_idea.md, flashed, "sq" console
 read ~0 +-2 dB on noise): spectrum.c sq_measure() = mean bin power in pb_lo..
 pb_hi / (p10 of bins +-26 kHz / 0.10536); main.c squelch_update(): open >= thr,
 close < max(thr-2, 1.5) after 0.8 s hang, mute = VOL 0 ramped (sq_muted ->
-vol_reg()). Tang S1 long on main = EV_SQL -> encoder sets thr 5 s (header
+vol_reg()). Tang S2 short on main (was S1 long) = EV_SQL -> encoder sets thr 5 s (header
 "SQ nn" + SNR bar); Audio > Squelch OFF/3..30 dB, NVS "sql". Shut = dim S-meter.
 
 Goal: Sipeed Tang Nano 20K + AD9226 ADC module (+ ILI9341 TFT). Phase 1 =
@@ -183,6 +191,12 @@ gen_up4_coef.py, >= 77 dB stop from 7.2 kHz) between VOL and audio_i2s
 now worst spur -49 dB (sim/tb_audio_up4 + check_up4.py, tb_audio_out +
 check_audio_out.py). Fmax 83.6, BSRAM 19/46, DSP 10.5/24.
 v7 + ESP written to flash 2026-11-22, user approved -> working-2026-11-22.
+v8 (2026-11-22, VERSION 8): adc_clip.v counts clipped ADC samples (code 0/
+4095 or OTR) per PEAK window -> spi_regs 0x1F CLIP, log2-coded (0 none, n =
+2^(n-1)..2^n-1); sim/tb_adc_clip. ESP adc_status(): CLIP >= 5 (>= 16 samples
+/0.26 s) = red CLIP, 1..4 = orange (rare peaks); FPGA < 8 -> old PEAK >= 240
+rule. Fmax 93.1. ESP console `sm [frames]` = S-meter calibration (mean
+passband dBm, min/max, noise, SNR; default 64 frames ~2 s).
 v6 (2026-11-15, VERSION 6): sdr_esp forks ssb_demod.v (programmable 255-tap
 complex filter in BSRAM, written by the ESP: spi_regs CF_ADDR 0x19 + 5-byte
 CF_DATA 0x1A..0x1E bursts; power-up cf_coef.hex = LSB 300-2700 from

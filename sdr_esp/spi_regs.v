@@ -52,6 +52,8 @@
 //                  {re[17:0], im[17:0]} Q1.17. 0x1A..0x1D are staged; writing
 //                  0x1E writes the tap at CF_ADDR and increments CF_ADDR, so
 //                  the ESP sets CF_ADDR = 0 once and sends 255 5-byte bursts.
+//   0x1F CLIP      RO  adc_clip.v: clipped ADC samples (code 0/4095 or OTR) per
+//                  PEAK window, log2-coded: 0 none, n = 2^(n-1)..2^n-1 (VERSION 8)
 //   others        RO  0x00
 module spi_regs #(
     parameter [7:0] VERSION = 8'h06
@@ -79,6 +81,7 @@ module spi_regs #(
     input  wire [17:0] iqc_c2,
     input  wire [1:0]  iqc_stat,
     input  wire [7:0]  adc_peak,
+    input  wire [7:0]  adc_clip,
     input  wire [7:0]  level,
     input  wire [7:0]  btn
 );
@@ -128,6 +131,7 @@ module spi_regs #(
             7'h17:   reg_read = vol;
             7'h18:   reg_read = {6'd0, agc};
             7'h19:   reg_read = cf_addr;
+            7'h1F:   reg_read = adc_clip;
             default: reg_read = 8'h00;
         endcase
     endfunction

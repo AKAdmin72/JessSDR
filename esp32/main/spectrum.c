@@ -6,7 +6,8 @@
 //   y  66..319  panel, by the view (menu: Display > View):
 //                 SPECTRUM (default) = spectrum 254 px,
 //                 WATERFALL          = waterfall 254 px (dashed red dial line),
-//                 BOTH               = spectrum 120 px (66..185) + waterfall 134 px
+//                 BOTH               = spectrum 160/140/120 px (menu: View,
+//                                      default 160) + waterfall 94/114/134 px
 //   spectrum = heatmap-filled, grid, passband, red dial mark
 // Input is either the real I/Q block from the FPGA (I2S, the wide DDC
 // output, 105.54kHz complex, centred on the dial) or a synthetic stream
@@ -41,10 +42,10 @@ static const char *TAG = "spectrum";
 #define PANEL_Y    66
 #define PANEL_H    (LCD_H - PANEL_Y)    // 254: spectrum + waterfall share it
 #define SPEC_Y     PANEL_Y
-#define SPEC_H_BOTH 120
 #define WF_MAX     PANEL_H              // waterfall ring rows (the tallest view)
 
 static int spec_h_px = PANEL_H;         // spectrum panel height, 0 = hidden
+static int spec_h_both = 160;           // spectrum height in BOTH (spectrum_set_layout)
 static int wf_y = LCD_H, wf_h = 0;      // waterfall panel, wf_h 0 = hidden
 
 // ---- signal ----
@@ -209,6 +210,11 @@ static void siggen_block(float *buf)
 // ---------------------------------------------------------------------------
 static float fft_buf[2 * FFT_N] __attribute__((aligned(16)));
 static float cap_acc[FFT_N];   // debug capture: power per bin, fftshifted
+// S-meter calibration (console "sm"): over N frames, mean passband power
+// (linear, not peak-held), min/max per frame, noise in the same passband
+static int sm_n, sm_left;
+static double sm_p, sm_nz;
+static float sm_min, sm_max;
 static int cap_left, cap_n;
 static float px_db[LCD_W];     // this frame, per pixel
 static float px_avg[LCD_W];    // averaged over frames (stage1/level_averager.v)
@@ -243,6 +249,11 @@ static bool st_valid;          // st_center set (first frame seen)
 static uint8_t wf_cap[WF_MAX]; // per row: ~p75 of its levels (noise, no stations) for edge fill
 static bool scroll_on = true;  // Retune: SCROLL / STATIC
 static int32_t wf_ctr[WF_MAX]; // Hz, centre each waterfall row was made at
+// Waterfall speed (menu Display > WF speed): one row per wf_div frames, the
+// row = mean of their levels over the floor (not a skipped frame: weak
+// signals add up). Partial sum in screen coordinates, shifted on retune.
+static int wf_div = 1, wf_n;
+static float wf_acc[LCD_W];
 static bool src_sim;           // synthetic input: stations move with the LO, so don't shift
 
 // Squelch measurement (main.c decides): SNR in the demodulator's passband =
@@ -306,16 +317,18 @@ static void state_follow(void)
     st_center += n * (double)HZ_PER_PX;
     if (abs(n) >= LCD_W / 2) warm = 0;        // mostly new band: floor from scratch
     // level above the floor, shifted; new columns = 0 dB (at the floor)
-    static float r_avg[LCD_W], r_wf[LCD_W];
+    static float r_avg[LCD_W], r_wf[LCD_W], r_acc[LCD_W];
     for (int x = 0; x < LCD_W; x++) {
         int xs = x + n;
         bool in = xs >= 0 && xs < LCD_W;
         r_avg[x] = in ? px_avg[xs] - env[xs] : 0;
         r_wf[x]  = in ? px_wf[xs] - env[xs] : 0;
+        r_acc[x] = in ? wf_acc[xs] : 0;
     }
     for (int x = 0; x < LCD_W; x++) {
         px_avg[x] = env[x] + r_avg[x];
         px_wf[x]  = env[x] + r_wf[x];
+        wf_acc[x] = r_acc[x];
         if (est[x] > px_avg[x]) est[x] = px_avg[x];   // as if the frame had come in
     }
 }
@@ -352,12 +365,22 @@ static void sq_measure(void)
         float p_lsb = sig / (FFT_N * win_pow[view_win]) * 17179869184.0f;   // x 2^34
         float dbm = FPGA_DBM_1LSB + 10.0f * log10f(p_lsb + 1e-12f);
         pb_dbm = dbm > pb_dbm - 20.0f * dt ? dbm : pb_dbm - 20.0f * dt;
+        if (sm_left > 0) {
+            sm_p += p_lsb;
+            if (dbm < sm_min) sm_min = dbm;
+            if (dbm > sm_max) sm_max = dbm;
+        }
     }
-    sig /= k1 - k0 + 1;
+    int nb = k1 - k0 + 1;
+    sig /= nb;
     int n = 0;
     for (int k = -SQ_NOISE_K; k <= SQ_NOISE_K; k++) sq_tmp[n++] = bin_pow(k);
     qsort(sq_tmp, n, sizeof(float), cmp_float);
     float noise = sq_tmp[n / 10] / 0.10536f + 1e-30f;
+    if (sm_left > 0) {   // noise power the passband would hold, same units as sm_p
+        sm_nz += noise * nb / (FFT_N * win_pow[view_win]) * 17179869184.0f;
+        sm_left--;
+    }
     sq_sig = sq_sig < 0 ? sig : sq_sig + (sig - sq_sig) * SQ_SIG_A;
     sq_noise = sq_noise < 0 ? noise : sq_noise + (noise - sq_noise) * SQ_NOISE_A;
     sq_snr_db = 10.0f * log10f(sq_sig / sq_noise + 1e-12f);
@@ -432,7 +455,13 @@ static void spectrum_render(bool new_row)
     // 4. output = level - envelope: flat noise along the bottom. view_range
     // dB fill the panel (was a fixed 60dB, waterfall 45dB: a 3-6dB station
     // was only 5-10px high and nearly black in the waterfall).
+    if (new_row) {   // add this frame to the row sum; a row every wf_div frames
+        for (int x = 0; x < LCD_W; x++) wf_acc[x] += px_wf[x] - env[x];
+        new_row = ++wf_n >= wf_div;
+    }
+    float k_acc = 1.0f;
     if (new_row) {
+        k_acc = 1.0f / wf_n;
         wf_head = (wf_head + WF_MAX - 1) % WF_MAX;
         wf_ctr[wf_head] = (int32_t)lrint(st_center);
     }
@@ -454,11 +483,13 @@ static void spectrum_render(bool new_row)
         int lv = (int)((rel + 1.0f) * k_lv);
         spec_lv[x] = lv < 0 ? 0 : lv > 255 ? 255 : lv;
         if (new_row) {
-            int w = (int)((px_wf[x] - env[x] + 1.0f) * k_wf);
+            int w = (int)((wf_acc[x] * k_acc + 1.0f) * k_wf);
             wf[wf_head][x] = w < 0 ? 0 : w > 255 ? 255 : w;
+            wf_acc[x] = 0;
         }
     }
     if (new_row) {   // edge fill level: ~75th percentile of the row (noise, stations are above)
+        wf_n = 0;
         uint16_t hist[256] = { 0 };
         for (int x = 0; x < LCD_W; x++) hist[wf[wf_head][x]]++;
         int acc = 0, v = 0;
@@ -662,7 +693,7 @@ void spectrum_set_squelch_closed(bool closed)
 static void draw_speed(float fps);
 static bool show_fps;   // menu: FPS (off by default)
 static float last_fps;
-static struct { bool clip; float pk_db; } adc_st = { false, -100.0f };   // no peak until the FPGA reports one
+static struct { int clip; float pk_db; } adc_st = { 0, -100.0f };   // no peak until the FPGA reports one
 static char speed_shown[7];   // what the slot holds now ("" = redraw)
 static void draw_header(void)
 {
@@ -712,11 +743,19 @@ void spectrum_floor_reset(void)
     warm = 0;
 }
 
-void spectrum_set_layout(int view)
+void spectrum_set_wf_speed(int div)
 {
+    wf_div = div < 1 ? 1 : div;
+    wf_n = 0;
+    memset(wf_acc, 0, sizeof(wf_acc));
+}
+
+void spectrum_set_layout(int view, int both_spec_h)
+{
+    if (both_spec_h >= 40 && both_spec_h <= PANEL_H - 40) spec_h_both = both_spec_h;
     switch (view) {
     case SPEC_VIEW_WATERFALL: spec_h_px = 0;           break;
-    case SPEC_VIEW_BOTH:      spec_h_px = SPEC_H_BOTH; break;
+    case SPEC_VIEW_BOTH:      spec_h_px = spec_h_both; break;
     default:                  spec_h_px = PANEL_H;     break;
     }
     wf_y = PANEL_Y + spec_h_px;
@@ -739,9 +778,10 @@ void spectrum_set_dial(uint32_t hz, int step, float lo_offset_hz)
 }
 
 
-// Header slot under the mode, 6 characters. ADC overload (adc_peak.v)
-// takes priority over the frame rate: white "CLIP" on red = the ADC
-// clipped within the last second; yellow "-3.2dB" = peak above -6dBFS
+// Header slot under the mode, 6 characters. ADC overload (adc_peak.v,
+// adc_clip.v) takes priority over the frame rate: white "CLIP" on red =
+// steady clipping within the last second, on orange = only rare clipped
+// samples (single peaks); yellow "-3.2dB" = peak above -6dBFS
 // (little headroom left); otherwise the FPS if switched on, or blank.
 static void draw_speed(float fps)
 {
@@ -750,15 +790,17 @@ static void draw_speed(float fps)
     last_fps = fps;
     if (adc_st.clip) {
         snprintf(t, sizeof(t), " CLIP ");
-        fg = C_TEXT; bg = RGB565(220, 0, 0);
+        fg = C_TEXT; bg = adc_st.clip >= 2 ? RGB565(220, 0, 0) : RGB565(230, 120, 0);
     } else if (adc_st.pk_db > -6.0f) {
         snprintf(t, sizeof(t), "%4.1fdB", adc_st.pk_db);
         fg = RGB565(255, 220, 0);
     } else if (show_fps) snprintf(t, sizeof(t), "%2.0ffps", fps);
     else t[0] = 0;
     snprintf(s, sizeof(s), "%-6.6s", t);
-    if (strcmp(s, speed_shown) == 0) return;
+    static uint16_t bg_shown;
+    if (strcmp(s, speed_shown) == 0 && bg == bg_shown) return;   // orange <-> red: same text
     strcpy(speed_shown, s);
+    bg_shown = bg;
     lcd_text(MODE_X, ROW2_Y, &font_mid, s, fg, bg);
 }
 
@@ -768,7 +810,7 @@ void spectrum_show_fps(bool on)
     draw_speed(0);   // clears it at once when switched off; the value follows within 1s
 }
 
-void spectrum_set_adc(bool clip, float peak_dbfs)
+void spectrum_set_adc(int clip, float peak_dbfs)
 {
     adc_st.clip = clip;
     adc_st.pk_db = peak_dbfs;
@@ -931,6 +973,27 @@ void spectrum_hold(void)
     spectrum_render(false);
     draw_spectrum();
     draw_waterfall();
+}
+
+// ---- S-meter calibration (main.c "sm") ----
+void spectrum_sm_start(int frames)
+{
+    sm_p = sm_nz = 0;
+    sm_min = 1e9f; sm_max = -1e9f;
+    sm_n = sm_left = frames;
+}
+
+// "SM <dial> <pb_lo>..<pb_hi> Hz: <dBm mean> (min .. max) noise <dBm> snr <dB> n <frames>"
+bool spectrum_sm_dump(void)
+{
+    if (sm_n == 0 || sm_left > 0) return false;
+    float p = 10.0f * log10f(sm_p / sm_n + 1e-12) + FPGA_DBM_1LSB;
+    float nz = 10.0f * log10f(sm_nz / sm_n + 1e-12) + FPGA_DBM_1LSB;
+    printf("SM %lu %.0f..%.0f Hz: %.2f dBm (%.2f .. %.2f) noise %.2f dBm snr %.1f dB n %d\n",
+           (unsigned long)dial_hz, pb_lo, pb_hi, p, sm_min, sm_max, nz, p - nz, sm_n);
+    fflush(stdout);
+    sm_n = 0;
+    return true;
 }
 
 // ---- debug capture for the serial console (main.c "s") ----

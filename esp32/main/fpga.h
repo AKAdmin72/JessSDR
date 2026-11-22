@@ -25,6 +25,7 @@
 #define FPGA_REG_AGC      0x18   // bits 1:0 AGC speed: FPGA_AGC_*
 #define FPGA_REG_CF_ADDR  0x19   // filter tap index for the next CF_DATA burst
 #define FPGA_REG_CF_DATA  0x1A   // 5 bytes: one complex tap {re18, im18} Q1.17, increments CF_ADDR
+#define FPGA_REG_CLIP     0x1F   // RO (VERSION >= 8), clipped ADC samples per PEAK window, log2: 0 none, n = 2^(n-1)..2^n-1
 #define FPGA_REG_BTN      0x16   // RO, Tang S1/S2 event counters {s2_long, s2_short, s1_long, s1_short}, 2 bits each
 #define FPGA_PEAK_CLIP    240    // >= -0.6dBFS: the ADC clipped
 #define FPGA_NR_OFF       0
