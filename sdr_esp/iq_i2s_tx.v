@@ -1,8 +1,8 @@
 // I2S transmitter: sends the I/Q pair to the ESP32-S3 (stage 4, PLAN.md).
-// The FPGA is the bus master, but it adds no clock of its own: BCK and WS
-// on the ESP link are the PCM1808 clocks from pcm1808_clkgen.v (BCK =
-// clk/8 = 3.375MHz, LRCK = clk/512 = 52.734kHz), wired to the link pins in
-// stage1_top.v. This module only produces DATA.
+// The FPGA is the bus master; BCK and WS come from outside this module.
+// (FpgaRX: the PCM1808 clocks, BCK = clk/8, LRCK = clk/512. JessSDR
+// sdr_esp: i2s_link_clk.v, BCK 6.754 MHz, WS 105.54 kHz = the wide DDC
+// rate.) This module only produces DATA.
 //
 // Format: Philips I2S, 32-bit slots, MSB first, MSB one BCK after the WS
 // edge. WS low = left = I, WS high = right = Q. Each slot carries bits

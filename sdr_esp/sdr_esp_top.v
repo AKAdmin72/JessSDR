@@ -7,7 +7,7 @@
 //       -> ssb_demod (LSB filter -2700..-300 Hz, 13.18 kHz)   \
 //          ssb_demod's decimated I/Q -> am_demod (envelope)    -> by MODE
 //       -> audio_agc -> audio_nr (LMS NR / ANF) [-> audio_agc #2 when NR/ANF on]
-//       -> audio_i2s (48.2 kHz) -> MAX98357A
+//       -> VOL -> audio_up4 (x4 FIR, 52.7 kHz) -> audio_i2s (linear, 48.2 kHz) -> MAX98357A
 //   ddc wide output (105.54 kHz I/Q) -> iq_i2s_tx -> ESP (I2S, FPGA = master)
 //   ESP -> spi_regs (SPI slave): FREQ (BCD, converted here), MODE, NR, CTRL
 //   ADC peak (|code-2048| max over 0.26 s, OTR = 255) and the S-meter level
@@ -52,7 +52,7 @@ module sdr_esp_top #(
     output wire        esp_ws,
     output wire        esp_data
 );
-    localparam [7:0] VERSION = 8'd6;   // 6: VOL, AGC, programmable filter (2026-11-15)
+    localparam [7:0] VERSION = 8'd7;   // 6: VOL, AGC, programmable filter (2026-11-15); 7: audio_up4 (2026-11-21)
     assign pa_en = 1'b1;                       // MAX98357A SD_MODE high = on (left)
 
     // ================= clock =================
@@ -222,8 +222,14 @@ module sdr_esp_top #(
     wire signed [17:0] vol_s = vol_p >>> 7;
     always @(posedge sclk) if (vol_v) spk <= (vol_s > 18'sd32767) ? 16'sd32767 : (vol_s < -18'sd32768) ? -16'sd32768 : vol_s[15:0];
     always @(posedge sclk) vol_v2 <= vol_v;
-    audio_i2s u_i2s (.clk(sclk), .in_valid(vol_v2), .in_audio(spk),
-                     .bclk(i2s_bclk), .lrck(i2s_lrck), .din(i2s_din));
+    // x4 FIR interpolation first: audio_i2s's linear interpolation straight
+    // from 13.18 kHz left the audio's images at 13.18 kHz +- f only ~21 dB down
+    wire               up_v;
+    wire signed [15:0] up_aud;
+    audio_up4 #(.PERIOD(1229)) u_up4 (.clk(sclk), .in_valid(vol_v2), .in_audio(spk),
+                                      .out_valid(up_v), .out_audio(up_aud));
+    audio_i2s #(.IN_PERIOD(1229)) u_i2s (.clk(sclk), .in_valid(up_v), .in_audio(up_aud),
+                                         .bclk(i2s_bclk), .lrck(i2s_lrck), .din(i2s_din));
 
     level_meter u_lvl (.clk(sclk), .in_valid(dec_v), .in_i(dec_i), .in_q(dec_q), .level(level));
 

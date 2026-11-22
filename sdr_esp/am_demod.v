@@ -15,7 +15,7 @@
 //      handles the rest.
 //
 // Timing: out_valid pulses 23 cycles after in_valid; inputs must be >= 24
-// cycles apart (they come every 2048).
+// cycles apart (in sdr_esp they come every 4916).
 module am_demod #(
     parameter AVG_SHIFT = 9
 ) (

@@ -9,7 +9,8 @@
 #pragma once
 #include <stdbool.h>
 
-typedef enum { EV_NONE, EV_NEXT, EV_PREV, EV_SELECT, EV_HOLD, EV_BACK } input_ev_t;
+typedef enum { EV_NONE, EV_NEXT, EV_PREV, EV_SELECT, EV_HOLD, EV_BACK,
+               EV_SQL } input_ev_t;   // EV_SQL: Tang S1 long on the main screen (main.c)
 
 void       input_init(void);
 input_ev_t input_get(void);   // button events, non-blocking

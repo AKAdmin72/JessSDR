@@ -59,7 +59,7 @@ static const char *TAG = "jesssdr";   // (the NVS namespace stays "fpgarx": save
 // ---------------------------------------------------------------------------
 // Menu tree
 // ---------------------------------------------------------------------------
-typedef enum { ACT_NONE, ACT_SUBMENU, ACT_BACK, ACT_EXIT, ACT_MODE, ACT_VIEW, ACT_RANGE, ACT_WINDOW, ACT_SMOOTH, ACT_FPS, ACT_NR, ACT_NR_LEVEL, ACT_FILTER, ACT_SHIFT, ACT_AGC, ACT_VOLUME, ACT_PPM, ACT_SOURCE, ACT_TEST_SPI, ACT_TEST_I2S, ACT_TEST_NOISE } action_t;
+typedef enum { ACT_NONE, ACT_SUBMENU, ACT_BACK, ACT_EXIT, ACT_MODE, ACT_VIEW, ACT_RANGE, ACT_WINDOW, ACT_SMOOTH, ACT_SCROLL, ACT_FPS, ACT_NR, ACT_NR_LEVEL, ACT_FILTER, ACT_SHIFT, ACT_AGC, ACT_VOLUME, ACT_SQL, ACT_PPM, ACT_SOURCE, ACT_TEST_SPI, ACT_TEST_I2S, ACT_TEST_NOISE } action_t;
 typedef struct menu menu_t;
 typedef struct { const char *label; action_t act; const menu_t *sub; } item_t;
 struct menu { const char *title; const item_t *items; int n; const menu_t *parent; };
@@ -72,13 +72,15 @@ static const item_t audio_items[] = {
     { .label = "Shift", .act = ACT_SHIFT },         // IF shift, SSB, edited with the encoder
     { .label = "AGC", .act = ACT_AGC },             // ": FAST" / ": MED" / ": SLOW"
     { .label = "Volume", .act = ACT_VOLUME },       // edited with the encoder
+    { .label = "Squelch", .act = ACT_SQL },         // ": OFF" / ": 8 dB", edited with the encoder
     { .label = "Back", .act = ACT_BACK },
 };
 static const item_t display_items[] = {
     { .label = "View", .act = ACT_VIEW },       // ": SPECTRUM" / ": WATERFALL" / ": BOTH"
     { .label = "Range", .act = ACT_RANGE },     // ": 40 dB"
-    { .label = "Window", .act = ACT_WINDOW },   // ": OFF" / ": HANN"
+    { .label = "Window", .act = ACT_WINDOW },   // ": OFF" / ": HANN" / ": BH"
     { .label = "Smooth", .act = ACT_SMOOTH },   // ": ON" / ": OFF"
+    { .label = "Retune", .act = ACT_SCROLL },   // ": SCROLL" / ": STATIC"
     { .label = "FPS", .act = ACT_FPS },         // ": ON" / ": OFF"
     { .label = "Back", .act = ACT_BACK },
 };
@@ -99,8 +101,8 @@ static const item_t main_items[] = {
 };
 static const menu_t menu_main   = { "MENU",   main_items,   6, NULL };
 static const menu_t menu_system = { "SYSTEM", system_items, 5, &menu_main };
-static const menu_t menu_display = { "DISPLAY", display_items, 6, &menu_main };
-static const menu_t menu_audio   = { "AUDIO",   audio_items,   7, &menu_main };
+static const menu_t menu_display = { "DISPLAY", display_items, 7, &menu_main };
+static const menu_t menu_audio   = { "AUDIO",   audio_items,   8, &menu_main };
 
 static bool src_fpga = true;   // spectrum input: false = synthetic, true = FPGA I2S (kept in NVS)
 // Display (kept in NVS): dB over the spectrum panel, Hann window on/off
@@ -108,9 +110,11 @@ static const uint8_t range_db[] = { 20, 30, 40, 60 };
 static int range_idx = 2;
 static int view_sel = SPEC_VIEW_SPECTRUM;   // main panel: spectrum / waterfall / both
 static const char *const view_name[] = { "SPECTRUM", "WATERFALL", "BOTH" };
-static bool win_hann;
+static int win_sel = SPEC_WIN_OFF;   // FFT window: OFF / HANN / BH (OFF = user preference)
+static const char *const win_name[] = { "OFF", "HANN", "BH" };
 static bool fpga_present;      // the FPGA answered with FPGA_ID at power-up
 static bool smooth_on = true;  // spectrum smoothing across frequency, kept in NVS
+static bool scroll_on = true; // retune: shift the picture with the dial, kept in NVS
 static bool fps_on = false;    // frame rate in the header, kept in NVS
 // FPGA LMS noise reduction (audio_nr.v): FPGA_NR_*, level 0..3 (shown 1..4,
 // 4 = strongest). The FPGA's level field is the other way round, hence
@@ -142,7 +146,9 @@ static void adc_status(int64_t now)
     }
     if (p >= pk_hold || now - t_pk > 1000000) { pk_hold = p; t_pk = now; }
     spectrum_set_adc(now - t_clip < 1000000, 20.0f * log10f((pk_hold + 0.5f) / 256.0f));
-    spectrum_set_smeter(FPGA_LEVEL_DBM(fpga_read(FPGA_REG_LEVEL)));
+    // S-meter: FFT power in the passband (spectrum.c); the FPGA's LEVEL
+    // register measures the whole +-6kHz decimator stream (neighbours too)
+    spectrum_set_smeter(spectrum_smeter_dbm());
 }
 
 // ---------------------------------------------------------------------------
@@ -186,12 +192,24 @@ static const char *agc_name[] = { "FAST", "MED", "SLOW" };
 // Volume: 0..23 in 2dB steps, 20 = 0dB (the level before VOL existed), 0 = mute
 #define VOL_MAX    23
 static int vol_idx = 20;
-static uint8_t vol_reg(void)
+static uint8_t vol_user_reg(void)
 {
     if (vol_idx <= 0) return 0;
     long r = lrintf(128.0f * powf(10.0f, (vol_idx - 20) * 0.1f));
     return r > 255 ? 255 : r;
 }
+// Squelch (docs/squelch_idea.md, variant 2): opens when the SNR in the
+// filter passband (spectrum.c, dB over the noise per FFT bin) reaches
+// sql_db, closes SQ_HANG_US after it fell below sql_db - SQ_HYST (but not
+// below SQ_CLOSE_MIN, the noise itself wanders ~+-1dB). Muting = VOL 0,
+// ramped so it doesn't click. 0 = off. Kept in NVS ("sql").
+#define SQL_MAX      30
+#define SQ_HYST      2.0f
+#define SQ_CLOSE_MIN 1.5f
+#define SQ_HANG_US   800000
+static int sql_db = 0;
+static bool sq_muted;
+static uint8_t vol_reg(void) { return sq_muted ? 0 : vol_user_reg(); }
 // LO calibration: the 27MHz crystal is off by ppm -> program f / (1 + ppm)
 static int ppm_x10 = 0;                  // 0.1 ppm, -1000..+1000
 static uint32_t lo_hz(void)
@@ -224,7 +242,7 @@ static void mode_show(void)
     float lo, hi, plo, phi;
     const char *bw = "";
     audio_band(&lo, &hi);
-    if (cur_mode == FPGA_MODE_AM)       { plo = -5000; phi = 5000; }
+    if (cur_mode == FPGA_MODE_AM)       { plo = -6000; phi = 6000; }   // ssb_demod's decimator, fc 6kHz
     else if (cur_mode == MODE_CW)       { plo = lo - CW_PITCH; phi = hi - CW_PITCH; bw = cw_bw[cw_bw_idx].name; }
     else if (cur_mode == FPGA_MODE_USB) { plo = lo; phi = hi; bw = ssb_bw[ssb_bw_idx].name; }
     else                                { plo = -hi; phi = -lo; bw = ssb_bw[ssb_bw_idx].name; }
@@ -282,14 +300,16 @@ static void dial_load(void)
     if (nvs_get_u8(h, "cwbw", &st) == ESP_OK && st < N_CW_BW) cw_bw_idx = st;
     if (nvs_get_u8(h, "agc", &st) == ESP_OK && st <= FPGA_AGC_SLOW) agc_speed = st;
     if (nvs_get_u8(h, "vol", &st) == ESP_OK && st <= VOL_MAX) vol_idx = st;
+    if (nvs_get_u8(h, "sql", &st) == ESP_OK && (st == 0 || (st >= 3 && st <= SQL_MAX))) sql_db = st;
     int16_t i16;
     if (nvs_get_i16(h, "shift", &i16) == ESP_OK && i16 >= -1000 && i16 <= 1000) if_shift = i16;
     if (nvs_get_i16(h, "ppm10", &i16) == ESP_OK && i16 >= -1000 && i16 <= 1000) ppm_x10 = i16;
     if (nvs_get_u8(h, "view", &st) == ESP_OK && st < SPEC_VIEW_N) view_sel = st;
     if (nvs_get_u8(h, "range", &st) == ESP_OK && st < sizeof(range_db)) range_idx = st;
-    if (nvs_get_u8(h, "win", &st) == ESP_OK) win_hann = st;
+    if (nvs_get_u8(h, "win", &st) == ESP_OK && st < SPEC_WIN_N) win_sel = st;
     if (nvs_get_u8(h, "fps", &st) == ESP_OK) fps_on = st;
     if (nvs_get_u8(h, "smooth", &st) == ESP_OK) smooth_on = st;
+    if (nvs_get_u8(h, "rtscr", &st) == ESP_OK) scroll_on = st;
     if (nvs_get_u8(h, "nrm", &st) == ESP_OK && st <= FPGA_NR_ANF) nr_mode = st;
     if (nvs_get_u8(h, "nrl3", &st) == ESP_OK && st <= 3) nr_level = st;
     nvs_close(h);
@@ -307,13 +327,15 @@ static void dial_save(void)
     nvs_set_u8(h, "cwbw", cw_bw_idx);
     nvs_set_u8(h, "agc", agc_speed);
     nvs_set_u8(h, "vol", vol_idx);
+    nvs_set_u8(h, "sql", sql_db);
     nvs_set_i16(h, "shift", if_shift);
     nvs_set_i16(h, "ppm10", ppm_x10);
     nvs_set_u8(h, "view", view_sel);
     nvs_set_u8(h, "range", range_idx);
-    nvs_set_u8(h, "win", win_hann);
+    nvs_set_u8(h, "win", win_sel);
     nvs_set_u8(h, "fps", fps_on);
     nvs_set_u8(h, "smooth", smooth_on);
+    nvs_set_u8(h, "rtscr", scroll_on);
     nvs_set_u8(h, "nrm", nr_mode);
     nvs_set_u8(h, "nrl3", nr_level);
     nvs_commit(h);
@@ -344,6 +366,12 @@ static int cursor;
 static bool editing;        // menu: the encoder changes the selected item's value
 static void fpga_sync_all(void);
 static bool vol_mode;       // main screen: the encoder sets the volume
+static bool sql_mode;       // main screen: the encoder sets the squelch threshold
+static void sql_mode_set(bool on)
+{
+    sql_mode = on;
+    spectrum_show_squelch(on ? sql_db : -1);
+}
 static void vol_mode_set(bool on)
 {
     vol_mode = on;
@@ -359,6 +387,13 @@ static void edit_adjust(action_t a, int d)
         if (vol_idx < 0) vol_idx = 0;
         if (vol_idx > VOL_MAX) vol_idx = VOL_MAX;
         fpga_write(FPGA_REG_VOL, vol_reg());
+    } else if (a == ACT_SQL) {
+        // OFF, 3..30 dB (one step from OFF lands on 3)
+        int v = sql_db + d;
+        if (sql_db == 0 && d > 0) v = 2 + d;
+        if (v < 3) v = 0;
+        if (v > SQL_MAX) v = SQL_MAX;
+        sql_db = v;
     } else if (a == ACT_SHIFT) {
         if_shift += 50 * d;
         if (if_shift < -1000) if_shift = -1000;
@@ -372,9 +407,45 @@ static void edit_adjust(action_t a, int d)
     }
 }
 
+// Squelch: VOL to 0 / back in a few steps (~10ms) instead of a click.
+static void sq_set_muted(bool m)
+{
+    if (m == sq_muted) return;
+    sq_muted = m;
+    spectrum_set_squelch_closed(m);
+    if (!fpga_present) return;
+    uint8_t v = vol_user_reg();
+    static const uint8_t close_q[] = { 3, 2, 1, 0 }, open_q[] = { 2, 4 };   // quarters
+    const uint8_t *q = m ? close_q : open_q;
+    int n = m ? 4 : 2;
+    for (int i = 0; i < n; i++) {
+        fpga_write(FPGA_REG_VOL, v * q[i] / 4);
+        if (i < n - 1) vTaskDelay(pdMS_TO_TICKS(m ? 4 : 2));
+    }
+}
+
+// Once per spectrum frame (main screen). Elsewhere (menu, tests) the
+// squelch keeps its state.
+static bool squelch_update(int64_t now)   // true = there was a new frame
+{
+    static int64_t t_above;
+    float snr;
+    if (!spectrum_sq_snr(&snr, NULL, NULL)) return false;
+    if (sql_db == 0) { sq_set_muted(false); return true; }
+    float close_at = sql_db - SQ_HYST;
+    if (close_at < SQ_CLOSE_MIN) close_at = SQ_CLOSE_MIN;
+    if (snr >= sql_db) { t_above = now; sq_set_muted(false); }
+    else if (!sq_muted) {
+        if (snr >= close_at) t_above = now;                  // hysteresis band: stay open
+        else if (now - t_above > SQ_HANG_US) sq_set_muted(true);
+    }
+    return true;
+}
+
 // Tang buttons S1/S2 as a stand-in for the encoder (sdr_esp buttons.v):
 // the FPGA counts short/long presses (2-bit counters), polled every 30ms.
-//   S1 short = NEXT (tune up / move down)   S1 long = SELECT (next step / enter)
+//   S1 short = NEXT (tune up / move down)   S1 long = squelch threshold on the
+//                                           main screen (encoder, 3s), else SELECT
 //   S2 short = PREV (tune down / move up)   S2 long = menu on the main screen, else BACK
 static input_ev_t tang_buttons(int64_t now)
 {
@@ -388,7 +459,7 @@ static input_ev_t tang_buttons(int64_t now)
     t_poll = now;
     uint8_t b = fpga_read(FPGA_REG_BTN);
     if (!have) { last = b; have = true; return EV_NONE; }
-    const input_ev_t map[4] = { EV_NEXT, EV_SELECT, EV_PREV, state == ST_MAIN ? EV_HOLD : EV_BACK };
+    const input_ev_t map[4] = { EV_NEXT, state == ST_MAIN ? EV_SQL : EV_SELECT, EV_PREV, state == ST_MAIN ? EV_HOLD : EV_BACK };
     for (int i = 3; i >= 0; i--)
         for (int d = ((b >> (2 * i)) - (last >> (2 * i))) & 3; d > 0; d--) pend[np++] = map[i];
     last = b;
@@ -417,8 +488,9 @@ static void draw_menu(void)
         else if (it->act == ACT_NR) snprintf(s, sizeof(s), "%s: %s", it->label, nr_name[nr_mode]);
         else if (it->act == ACT_NR_LEVEL) snprintf(s, sizeof(s), "%s: %d", it->label, nr_level + 1);
         else if (it->act == ACT_SMOOTH) snprintf(s, sizeof(s), "%s: %s", it->label, smooth_on ? "ON" : "OFF");
+        else if (it->act == ACT_SCROLL) snprintf(s, sizeof(s), "%s: %s", it->label, scroll_on ? "SCROLL" : "STATIC");
         else if (it->act == ACT_FPS) snprintf(s, sizeof(s), "%s: %s", it->label, fps_on ? "ON" : "OFF");
-        else if (it->act == ACT_WINDOW) snprintf(s, sizeof(s), "%s: %s", it->label, win_hann ? "HANN" : "OFF");
+        else if (it->act == ACT_WINDOW) snprintf(s, sizeof(s), "%s: %s", it->label, win_name[win_sel]);
         else if (it->act == ACT_MODE) snprintf(s, sizeof(s), "%s: %s", it->label, mode_name[mode_sel]);
         else if (it->act == ACT_FILTER) {
             if (cur_mode == FPGA_MODE_AM) snprintf(s, sizeof(s), "%s: AM (fixed)", it->label);
@@ -431,6 +503,10 @@ static void draw_menu(void)
         else if (it->act == ACT_VOLUME) {
             if (vol_idx == 0) snprintf(s, sizeof(s), "%s: MUTE", it->label);
             else snprintf(s, sizeof(s), "%s: %d (%+d dB)", it->label, vol_idx, (vol_idx - 20) * 2);
+        }
+        else if (it->act == ACT_SQL) {
+            if (sql_db == 0) snprintf(s, sizeof(s), "%s: OFF", it->label);
+            else snprintf(s, sizeof(s), "%s: %d dB over noise", it->label, sql_db);
         }
         else if (it->act == ACT_PPM) snprintf(s, sizeof(s), "%s: %+.1f ppm", it->label, ppm_x10 / 10.0f);
         else snprintf(s, sizeof(s), "%s%s", it->label, it->act == ACT_SUBMENU ? " >" : "");
@@ -770,13 +846,13 @@ static void menu_select(void)
         break;
     case ACT_RANGE:    // 20 -> 30 -> 40 -> 60 -> 20 dB
         range_idx = (range_idx + 1) % sizeof(range_db);
-        spectrum_set_view(range_db[range_idx], win_hann);
+        spectrum_set_view(range_db[range_idx], win_sel);
         dial_save();
         draw_menu();
         break;
     case ACT_WINDOW:
-        win_hann = !win_hann;
-        spectrum_set_view(range_db[range_idx], win_hann);
+        win_sel = (win_sel + 1) % SPEC_WIN_N;   // OFF -> HANN -> BH -> OFF
+        spectrum_set_view(range_db[range_idx], win_sel);
         dial_save();
         draw_menu();
         break;
@@ -795,6 +871,12 @@ static void menu_select(void)
     case ACT_SMOOTH:
         smooth_on = !smooth_on;
         spectrum_set_smooth(smooth_on);
+        dial_save();
+        draw_menu();
+        break;
+    case ACT_SCROLL:
+        scroll_on = !scroll_on;
+        spectrum_set_scroll(scroll_on);
         dial_save();
         draw_menu();
         break;
@@ -820,6 +902,7 @@ static void menu_select(void)
         break;
     case ACT_SHIFT:
     case ACT_VOLUME:
+    case ACT_SQL:
     case ACT_PPM:
         editing = !editing;
         if (!editing) { mode_show(); dial_save(); }
@@ -868,17 +951,23 @@ static void console_poll(void)
             printf("OK lcd i %d\n", lcd_get_invert());
         } else if (strcmp(line, "defaults") == 0) {   // menu settings -> defaults, dial/step kept
             src_fpga = true; mode_sel = MODE_AUTO; range_idx = 2; view_sel = SPEC_VIEW_SPECTRUM;
-            ssb_bw_idx = 1; cw_bw_idx = 1; if_shift = 0; agc_speed = FPGA_AGC_MED; vol_idx = 20;   // ppm kept
-            spectrum_set_layout(view_sel); win_hann = false; fps_on = false; smooth_on = true;
+            ssb_bw_idx = 1; cw_bw_idx = 1; if_shift = 0; agc_speed = FPGA_AGC_MED; vol_idx = 20; sql_db = 0;   // ppm kept
+            spectrum_set_layout(view_sel); win_sel = SPEC_WIN_OFF; fps_on = false; smooth_on = true;
             spectrum_set_smooth(smooth_on);
+            scroll_on = true; spectrum_set_scroll(scroll_on);
             nr_mode = FPGA_NR_OFF; nr_level = 1;
-            spectrum_set_view(range_db[range_idx], win_hann);
+            spectrum_set_view(range_db[range_idx], win_sel);
             spectrum_show_fps(fps_on);
             if (fpga_present) fpga_sync_all();
             else mode_apply(true);
             dial_save();
             enter_main();
             printf("OK defaults\n");
+        } else if (strcmp(line, "sq") == 0) {   // squelch: passband level, noise, SNR, state
+            float snr, sig, nz;
+            spectrum_sq_snr(&snr, &sig, &nz);
+            printf("sq thr %d snr %.1f sig %.1f noise %.1f %s\n", sql_db, snr, sig, nz,
+                   sql_db == 0 ? "OFF" : sq_muted ? "CLOSED" : "OPEN");
         } else if (strcmp(line, "nz") == 0) {
             nz_print();
         } else if (strcmp(line, "lcd") == 0) {
@@ -920,9 +1009,10 @@ void app_main(void)
     lcd_backlight(100);
     int64_t t_splash = esp_timer_get_time();
     spectrum_init();
-    spectrum_set_view(range_db[range_idx], win_hann);
+    spectrum_set_view(range_db[range_idx], win_sel);
     spectrum_set_layout(view_sel);
     spectrum_set_smooth(smooth_on);
+    spectrum_set_scroll(scroll_on);
     fpga_init();
     input_init();
     if (uart_driver_install(UART_NUM_0, 256, 4096, 0, NULL, 0) == ESP_OK) uart_vfs_dev_use_driver(UART_NUM_0);
@@ -949,7 +1039,7 @@ void app_main(void)
         input_ev_t ev = input_get();
         int64_t now = esp_timer_get_time();
         if (ev == EV_NONE && fpga_present) ev = tang_buttons(now);
-        int enc = input_enc_steps(state == ST_MAIN && !vol_mode);   // dial or menu steps
+        int enc = input_enc_steps(state == ST_MAIN && !vol_mode && !sql_mode);   // dial or menu steps
 
         // save the dial 2s after the last change (spares the flash while turning)
         if (nvs_dirty && now - t_last_tune > 2000000) {
@@ -989,11 +1079,23 @@ void app_main(void)
 
         switch (state) {
         case ST_MAIN:
-            if (ev == EV_HOLD) { vol_mode_set(false); enter_menu(&menu_main, 0); break; }
+            if (ev == EV_HOLD) { vol_mode_set(false); sql_mode_set(false); enter_menu(&menu_main, 0); break; }
             // BACK: the encoder sets the volume (header shows it) until BACK
             // again or 3s without a change
-            if (ev == EV_BACK) { vol_mode_set(!vol_mode); t_vol = now; }
-            if (vol_mode) {
+            if (ev == EV_BACK) { sql_mode_set(false); vol_mode_set(!vol_mode); t_vol = now; }
+            // Tang S1 long: the encoder sets the squelch threshold (header:
+            // "SQ nn" + live SNR bar, tick = threshold) until S1 long / SELECT
+            // / BACK or 5s without a change
+            if (ev == EV_SQL) { vol_mode_set(false); sql_mode_set(!sql_mode); t_vol = now; }
+            if (sql_mode) {
+                int d = enc + (ev == EV_NEXT) - (ev == EV_PREV);
+                if (d) {
+                    edit_adjust(ACT_SQL, d);
+                    nvs_dirty = true;
+                    t_last_tune = t_vol = now;
+                }
+                if (ev == EV_SELECT || now - t_vol > 5000000) { sql_mode_set(false); ev = EV_NONE; }
+            } else if (vol_mode) {
                 int d = enc + (ev == EV_NEXT) - (ev == EV_PREV);
                 if (d) {
                     edit_adjust(ACT_VOLUME, d);
@@ -1017,14 +1119,20 @@ void app_main(void)
             console_poll();
             spectrum_capture_dump();
             if (src_fpga && fpga_present) {
-                if (fpga_iq_block(iq, SPEC_FFT_N)) spectrum_step(iq, "FPGA");
+                int r = fpga_iq_block(iq, SPEC_FFT_N);
+                if (r == FPGA_IQ_OK) spectrum_step(iq, "FPGA");
+                else if (r == FPGA_IQ_STALE) spectrum_hold();
                 else vTaskDelay(1);
             } else {
                 spectrum_step(NULL, "SIM ");
             }
+            if (squelch_update(now) && sql_mode) spectrum_show_squelch(sql_db);   // live bar
             break;
 
         case ST_MENU:
+            // frames keep coming without drawing: squelch, S-meter, waterfall history
+            if (src_fpga && fpga_present && fpga_iq_block(iq, SPEC_FFT_N) == FPGA_IQ_OK) spectrum_feed(iq);
+            squelch_update(now);
             if (editing) {
                 action_t a = cur_menu->items[cursor].act;
                 int d = enc + (ev == EV_NEXT) - (ev == EV_PREV);
@@ -1078,7 +1186,7 @@ void app_main(void)
                 uint8_t p = fpga_read(FPGA_REG_PEAK);
                 if (p > nz_peak) nz_peak = p;
             }
-            if (fpga_iq_block(iq, SPEC_FFT_N)) {
+            if (fpga_iq_block(iq, SPEC_FFT_N) == FPGA_IQ_OK) {
                 float db;
                 if (noise_add(iq, &db)) {
                     nz_live = db;

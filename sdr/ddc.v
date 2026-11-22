@@ -15,7 +15,9 @@
 // Wide output (spectrum overview): the same integrators sampled every
 // R2 = 614 clocks -> 105.54 kHz, own comb pipeline, >> SHIFT2 = 43
 // (614^4 = 2^37.06, same scale as the narrow output to within 0.1 dB).
-// CIC4 droop at +-33 kHz -5.6 dB (floor_eq flattens it), aliases >= -33 dB.
+// CIC4 droop at +-33 kHz -5.8 dB (floor_eq flattens it), aliases there
+// -27 dBc, at +-45 kHz -10 dBc, at the +-52.7 kHz edge 0 dBc: only the
+// middle +-33..35 kHz is usable (the ESP shows +-35 kHz).
 module ddc #(
     parameter integer R  = 1229,
     parameter integer R2 = 614

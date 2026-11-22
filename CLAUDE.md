@@ -18,6 +18,30 @@ difference + verdict on screen, console `nz`. No PC needed at the antenna.
 Main panel view (2026-11-15, menu Display > View, NVS "view"): SPECTRUM
 (default, 254 px) / WATERFALL (254 px, dashed red dial line) / BOTH (120+134);
 waterfall ring is 254 rows in PSRAM, always filled -> no history lost on switch.
+Retune without smear (2026-11-19): spectrum.c
+state_follow() shifts px_avg/px_wf/est by whole pixels to the new centre
+(st_center), edge columns "cold" until a fresh frame; waterfall rows keep
+wf_ctr[] and are drawn offset (history stays put). fpga_iq_block() returns
+FPGA_IQ_STALE for blocks ending < 20 ms after fpga_set_freq -> main.c calls
+spectrum_hold() (shifted redraw, no wf row). SIM input: no shift.
+2026-11-21 review rework (ESP; flashed + user-approved 2026-11-22, release
+working-2026-11-22; next: docs/flat_spectrum_plan.md = CFIR in FPGA): only the middle +-35 kHz shown (SPAN_HZ;
+the wide CIC4 aliases -27 dBc at 33k, 0 dBc at 52.7k; fractional bin->pixel
+weights), scroll shifts only the level ABOVE the floor (px_avg-env), est/env
+stay in screen coordinates (floor shape = CIC droop, tied to the screen; a
+jump >= half a screen restarts the floor), waterfall edges = row noise
+(wf_cap). Menu Display > Retune SCROLL/STATIC (NVS "rtscr"). EQ_SLOPE 1 dB/kHz
+(was 1.94: AM lost ~8.7 dB). Window OFF/HANN/BH (default OFF = user choice).
+S-meter = FFT passband power (Parseval, FPGA_DBM_1LSB -115.7) peak-held,
+not the FPGA LEVEL (+-6 kHz incl. neighbours). Menu open: spectrum_feed()
+keeps squelch/S-meter/waterfall running. fpga.c: block time = arrival of
+its last sample (s_end), IQ_CLEAN_US 16 ms. AM shading +-6 kHz.
+Squelch (2026-11-19, variant 2 of docs/squelch_idea.md, flashed, "sq" console
+read ~0 +-2 dB on noise): spectrum.c sq_measure() = mean bin power in pb_lo..
+pb_hi / (p10 of bins +-26 kHz / 0.10536); main.c squelch_update(): open >= thr,
+close < max(thr-2, 1.5) after 0.8 s hang, mute = VOL 0 ramped (sq_muted ->
+vol_reg()). Tang S1 long on main = EV_SQL -> encoder sets thr 5 s (header
+"SQ nn" + SNR bar); Audio > Squelch OFF/3..30 dB, NVS "sql". Shut = dim S-meter.
 
 Goal: Sipeed Tang Nano 20K + AD9226 ADC module (+ ILI9341 TFT). Phase 1 =
 ADC bring-up/tests (`adc_test/`), phase 2 = 40m (7.0–7.2 MHz) direct-sampling
@@ -153,6 +177,12 @@ inaudible; Python model confirmed: out=y lost -16/-21dB at 1-2/2-2.7kHz vs
 noise -13dB, and 6-15dB loudness): NR out = y + residual mix (Level 1..4 =
 e/2,e/4,e/8,0; mu fixed 2^-11; ANF unchanged) + 2nd audio_agc (G_MAX 8x)
 after NR/ANF (bypassed when off). ESP NVS key nrl3, default Level 2.
+v7 (2026-11-21, VERSION 7): audio_up4.v (x4 polyphase FIR 96 taps,
+gen_up4_coef.py, >= 77 dB stop from 7.2 kHz) between VOL and audio_i2s
+(IN_PERIOD 1229): images of the audio at 13.18k+-f were only ~21 dB down,
+now worst spur -49 dB (sim/tb_audio_up4 + check_up4.py, tb_audio_out +
+check_audio_out.py). Fmax 83.6, BSRAM 19/46, DSP 10.5/24.
+v7 + ESP written to flash 2026-11-22, user approved -> working-2026-11-22.
 v6 (2026-11-15, VERSION 6): sdr_esp forks ssb_demod.v (programmable 255-tap
 complex filter in BSRAM, written by the ESP: spi_regs CF_ADDR 0x19 + 5-byte
 CF_DATA 0x1A..0x1E bursts; power-up cf_coef.hex = LSB 300-2700 from

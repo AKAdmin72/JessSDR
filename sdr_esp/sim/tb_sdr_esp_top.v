@@ -115,7 +115,7 @@ module tb_sdr_esp_top;
     initial begin
         #2000;
         rd(7'h00, v); expect8(v, 8'h5A, "ID");
-        rd(7'h01, v); expect8(v, 8'h06, "VERSION");
+        rd(7'h01, v); expect8(v, 8'h07, "VERSION");
         wr(7'h02, 8'hA5); rd(7'h02, v); expect8(v, 8'hA5, "SCRATCH");
         // tune away and back: 14.074 MHz, then 7.100 MHz
         wr_freq(32'h14074000); #2000;

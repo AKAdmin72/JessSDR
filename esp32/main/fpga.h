@@ -44,6 +44,9 @@
 #define FPGA_AGC_SLOW     2
 #define FPGA_CF_TAPS      255          // ssb_demod.v programmable filter
 #define FPGA_AUDIO_FS     (64.8e6f / 1229 / 4)   // ssb_demod output rate, 13181 Hz
+// dBm at the SMA of a tone with 1 LSB amplitude at the DDC output (narrow
+// and wide, 18-bit): the same constant as FPGA_LEVEL_DBM, L = 8 log2|x|
+#define FPGA_DBM_1LSB     (-90.7f - 25.0f)
 #define FPGA_LEVEL_DBM(l) (-90.7f + 6.02f * (l) / 8.0f - 25.0f)   // LEVEL -> dBm (approx.; tools/sdr.py, AD8138 mod +25dB)
 int fpga_mode_k(int mode);
 
@@ -85,5 +88,7 @@ void fpga_i2s_stats_reset(void);
 void fpga_i2s_stats(fpga_i2s_stats_t *s);
 
 // Latest I/Q block as SPEC_FFT_N interleaved floats (full scale = 1.0).
-// Returns false if no new block arrived since the last call.
-bool fpga_iq_block(float *dst, int n);
+// NONE = no new block since the last call; STALE = a new block arrived but
+// may contain samples from before the last fpga_set_freq (dst untouched).
+enum { FPGA_IQ_NONE, FPGA_IQ_OK, FPGA_IQ_STALE };
+int fpga_iq_block(float *dst, int n);

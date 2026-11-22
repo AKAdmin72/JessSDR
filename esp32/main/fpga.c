@@ -83,6 +83,8 @@ uint32_t fpga_read_u32(uint8_t addr)
     return (uint32_t)rxb[1] << 24 | (uint32_t)rxb[2] << 16 | (uint32_t)rxb[3] << 8 | rxb[4];
 }
 
+static volatile int64_t t_retune;      // when the LO last changed (see fpga_iq_block)
+
 void fpga_set_freq(uint32_t hz)
 {
     uint32_t bcd = 0;
@@ -91,6 +93,7 @@ void fpga_set_freq(uint32_t hz)
     uint8_t tx[5] = { FPGA_REG_FREQ, bcd >> 24, bcd >> 16, bcd >> 8, bcd };
     spi_transaction_t t = { .length = 40, .tx_buffer = tx };
     xfer(&t);
+    t_retune = esp_timer_get_time();
 }
 
 uint32_t fpga_get_freq(void)
@@ -149,6 +152,7 @@ static volatile bool reset_req;
 static float iq_buf[2][2 * I2S_BLOCK];
 static volatile int iq_ready = -1;     // index of the newest complete block
 static volatile bool iq_new;
+static int64_t iq_t[2];                // when each block was complete
 
 void fpga_i2s_test_mode(bool on) { test_on = on; }
 void fpga_i2s_stats_reset(void) { reset_req = true; }
@@ -166,12 +170,22 @@ float fpga_i2s_rate(const fpga_i2s_stats_t *s)
     return dt > 0 ? s->frames * 1e6f / dt : 0;
 }
 
-bool fpga_iq_block(float *dst, int n)
+// A block whose last sample arrived less than IQ_CLEAN_US after a retune
+// may hold samples from the old LO: the block itself (1024 / 105.5kHz =
+// 9.7ms) + up to one DMA descriptor (480 frames = 4.5ms: the arrival time
+// is only known per descriptor) + margin. The arrival time is tracked by
+// i2s_task (s_end), so a DMA backlog (up to 8 descriptors = 36ms) can no
+// longer pass old data off as fresh.
+#define IQ_CLEAN_US 16000
+
+int fpga_iq_block(float *dst, int n)
 {
-    if (!iq_new || iq_ready < 0) return false;
+    if (!iq_new || iq_ready < 0) return FPGA_IQ_NONE;
     iq_new = false;
-    memcpy(dst, iq_buf[iq_ready], n * 2 * sizeof(float));
-    return true;
+    int b = iq_ready;
+    if (iq_t[b] - t_retune < IQ_CLEAN_US) return FPGA_IQ_STALE;
+    memcpy(dst, iq_buf[b], n * 2 * sizeof(float));
+    return FPGA_IQ_OK;
 }
 
 static void i2s_task(void *arg)
@@ -182,10 +196,17 @@ static void i2s_task(void *arg)
     int fill = 0;
     while (1) {
         size_t got = 0;
+        int64_t t_rd = esp_timer_get_time();
         if (i2s_channel_read(rx, buf, sizeof(buf), &got, pdMS_TO_TICKS(200)) != ESP_OK || got == 0)
             continue;
         int n = got / 8;
         int64_t now = esp_timer_get_time();
+        // when the newest sample arrived: the read had to wait -> just now;
+        // it returned at once (backlog) -> the previous end + n frames
+        static int64_t s_end;
+        if (now - t_rd > 2000 || s_end == 0) s_end = now;
+        else s_end += (int64_t)(n * 1e6f / FPGA_FS_HZ);
+        if (s_end > now) s_end = now;
         if (reset_req) {
             // Start counting at this block boundary; the block itself is not
             // counted, so frames / (t_last - t_reset) is exact.
@@ -216,6 +237,7 @@ static void i2s_task(void *arg)
                 d[2 * k + 1] = buf[2 * k + 1] * (1.0f / 2147483648.0f);
             }
             if (n == I2S_BLOCK) {
+                iq_t[fill] = s_end;
                 iq_ready = fill;
                 iq_new = true;
                 fill ^= 1;

@@ -10,8 +10,11 @@
 //   spectrum = heatmap-filled, grid, passband, red dial mark
 // Input is either the real I/Q block from the FPGA (I2S, the wide DDC
 // output, 105.54kHz complex, centred on the dial) or a synthetic stream
-// like it: a few LSB "voices", CW carriers and noise. FFT 1024, no window
-// (the user prefers stations as broad shapes). The header shows the
+// like it: a few LSB "voices", CW carriers and noise. FFT 1024, window
+// OFF by default (the user prefers stations as broad shapes; menu Window
+// HANN / BH). Only the middle +-35kHz of the +-52.7kHz are shown: further
+// out the wide CIC lets aliases through (-27dBc at 33kHz, -10dBc at 45kHz,
+// 0dBc at the edge - ddc.v) and droops up to 16dB. The header shows the
 // spectrum rate and where the time goes.
 #include <assert.h>
 #include <math.h>
@@ -47,7 +50,10 @@ static int wf_y = LCD_H, wf_h = 0;      // waterfall panel, wf_h 0 = hidden
 // ---- signal ----
 #define FS         FPGA_FS_HZ           // wide DDC output, 64.8MHz / 614
 #define FFT_N      1024
-#define HZ_PER_PX  (FS / LCD_W)
+#define BIN_HZ     (FS / FFT_N)            // 103.06Hz
+#define SPAN_HZ    70000.0f                // shown: +-35kHz around the LO
+#define HZ_PER_PX  (SPAN_HZ / LCD_W)       // 145.8Hz
+#define BINS_PX    (HZ_PER_PX / BIN_HZ)    // 1.415 bins per pixel
 
 static uint32_t dial_hz = 7100000;
 static float lo_shift_hz = 0;           // spectrum centre (the LO) - dial: CW -pitch, else 0
@@ -217,9 +223,53 @@ static float rel_db[LCD_W];    // dB above the floor, per pixel
 static bool view_smooth = true; // [1 2 1]/4 across frequency on the spectrum (menu: Smooth)
 static uint8_t (*wf)[LCD_W];   // WF_MAX rows, PSRAM; always filled, the view shows the newest wf_h
 static int wf_head;            // index of the newest waterfall row
+// Retune without smear: the per-pixel state (px_avg, px_wf, est) belongs to
+// the spectrum centre st_center (within half a pixel of the real one). When
+// the dial moves, only the level ABOVE the floor (px_avg - env, px_wf -
+// env) is shifted by whole pixels; the floor itself (est/env) stays where
+// it is on the screen - its shape is the CIC droop and the window, tied to
+// the screen position, not to the frequency (shifting it made hills: a
+// column from the drooping edge carried its low floor inwards). Columns
+// that come in at the edge start at the floor and fade in with the normal
+// averaging. A jump of half a screen or more restarts the floor like at
+// power-up (another stretch of band, maybe another noise level).
+// Each waterfall row keeps the centre it was made at and is drawn shifted,
+// so the history stays put; where a shifted row has no data the edge is
+// filled with that row's own noise (wf_cap), not black.
+// Menu Display > Retune: SCROLL (this) or STATIC (the old way: no shift,
+// the averages forget the old picture).
+static double st_center;       // Hz, centre the state arrays are aligned to
+static bool st_valid;          // st_center set (first frame seen)
+static uint8_t wf_cap[WF_MAX]; // per row: ~p75 of its levels (noise, no stations) for edge fill
+static bool scroll_on = true;  // Retune: SCROLL / STATIC
+static int32_t wf_ctr[WF_MAX]; // Hz, centre each waterfall row was made at
+static bool src_sim;           // synthetic input: stations move with the LO, so don't shift
+
+// Squelch measurement (main.c decides): SNR in the demodulator's passband =
+// mean FFT bin power inside pb_lo..pb_hi over the mean noise power per bin.
+// Noise per bin = 10th percentile of the bins within +-SQ_NOISE_K (about
+// +-26kHz, same as noise.c) / 0.10536 (the p10 of an exponential = 0.10536
+// x its mean), so it holds while up to ~half the band is busy (then it
+// reads high = the squelch opens harder, never easier).
+#define SQ_NOISE_K   256
+#define SQ_SIG_A     0.5f              // per frame (~30/s): ~60ms attack
+#define SQ_NOISE_A   0.05f             // ~0.7s
+static float sq_sig = -1, sq_noise = -1;   // linear, -1 = restart
+static float sq_snr_db;
+static bool sq_fresh;
+static float sq_tmp[2 * SQ_NOISE_K + 1];
 static float view_range = 40;  // dB over the spectrum panel (menu: Range)
-static bool view_win;          // Hann window before the FFT (menu: Window)
-static float hann[FFT_N];
+static int view_win;           // window before the FFT: SPEC_WIN_* (menu: Window)
+static float win_tab[SPEC_WIN_N][FFT_N];
+static float win_pow[SPEC_WIN_N];   // sum of w^2 (Parseval: power of the signal)
+// pixel -> FFT bins (fractional overlap, 1.415 bins per pixel)
+static int16_t px_k0[LCD_W];        // first bin offset from the LO
+static uint8_t px_nk[LCD_W];        // bins touched (<= 3)
+static float px_w[LCD_W][3];        // overlap of each, sum = BINS_PX
+// S-meter (dBm) from the FFT power inside the demodulator passband
+// (was the FPGA's level_meter on the +-6kHz decimator stream: a strong
+// neighbour 4kHz away showed S9 while the filter had nothing).
+static float pb_dbm = -140;
 
 // Same numbers as the Tang build (where 1 level = 0.4dB, 206Hz per bin,
 // 206 FFT frames/s), converted to dB, pixels and seconds:
@@ -233,11 +283,86 @@ static float hann[FFT_N];
 // ~10s at EQ_RISE to climb: the spectrum started high and sank to 0.
 #define EQ_SKIP    4
 #define EQ_WARM    36
-#define EQ_SLOPE   (0.4f * HZ_PER_PX / 206.0f)   // dB per pixel (SLOPE=1 level/bin)
+// Envelope slope: was 1.94dB/kHz (Tang SLOPE=1 level/bin); a station
+// lifts the floor under it by slope x half its width, so an AM station
+// (9kHz) lost ~8.7dB, SSB ~2.6dB. 1dB/kHz halves that and still follows
+// the CIC droop (<= 0.35dB/kHz within +-35kHz).
+#define EQ_SLOPE   (1.0f * HZ_PER_PX / 1000.0f)  // dB per pixel
 // FpgaRX had a 1/f + LO-leakage hump around the LO and a steeper envelope
 // there (DC_W/DC_SLOPE). The direct-sampling DDC has none, and the dial is
 // at the centre now, so that zone would only hide the station listened to.
 static float slope_at(int x) { return EQ_SLOPE; }
+
+static double cur_center(void) { return (double)dial_hz + lo_shift_hz; }
+
+// Shift the state to the current centre (whole pixels). Tuning up moves the
+// stations left: new[x] = old[x + n].
+static void state_follow(void)
+{
+    double c = cur_center();
+    if (!st_valid || src_sim || !scroll_on) { st_center = c; st_valid = true; return; }
+    int n = (int)lrint((c - st_center) / HZ_PER_PX);
+    if (n == 0) return;
+    st_center += n * (double)HZ_PER_PX;
+    if (abs(n) >= LCD_W / 2) warm = 0;        // mostly new band: floor from scratch
+    // level above the floor, shifted; new columns = 0 dB (at the floor)
+    static float r_avg[LCD_W], r_wf[LCD_W];
+    for (int x = 0; x < LCD_W; x++) {
+        int xs = x + n;
+        bool in = xs >= 0 && xs < LCD_W;
+        r_avg[x] = in ? px_avg[xs] - env[xs] : 0;
+        r_wf[x]  = in ? px_wf[xs] - env[xs] : 0;
+    }
+    for (int x = 0; x < LCD_W; x++) {
+        px_avg[x] = env[x] + r_avg[x];
+        px_wf[x]  = env[x] + r_wf[x];
+        if (est[x] > px_avg[x]) est[x] = px_avg[x];   // as if the frame had come in
+    }
+}
+
+static void spectrum_render(bool new_row);
+
+static int cmp_float(const void *a, const void *b)
+{
+    float x = *(const float *)a, y = *(const float *)b;
+    return x < y ? -1 : x > y;
+}
+
+static inline float bin_pow(int k)   // k = bin offset from the LO, signed
+{
+    int i = k & (FFT_N - 1);
+    return fft_buf[2 * i] * fft_buf[2 * i] + fft_buf[2 * i + 1] * fft_buf[2 * i + 1];
+}
+
+static void sq_measure(void)
+{
+    const float bin_hz = FS / FFT_N;
+    int k0 = (int)ceilf((pb_lo - lo_shift_hz) / bin_hz), k1 = (int)floorf((pb_hi - lo_shift_hz) / bin_hz);
+    if (k1 < k0) k0 = k1 = (int)lrintf((pb_lo + pb_hi) * 0.5f / bin_hz - lo_shift_hz / bin_hz);
+    float sig = 0;
+    for (int k = k0; k <= k1; k++) sig += bin_pow(k);
+    // S-meter: Parseval - signal power = sum |X|^2 / (N sum w^2), in units
+    // of the I/Q floats (18-bit sample / 2^17) -> LSB^2 -> dBm. Peak-reading
+    // like the old level_meter: up at once, down 20dB/s.
+    {
+        static int64_t t_prev;
+        int64_t now = esp_timer_get_time();
+        float dt = t_prev ? (now - t_prev) * 1e-6f : 0;
+        t_prev = now;
+        float p_lsb = sig / (FFT_N * win_pow[view_win]) * 17179869184.0f;   // x 2^34
+        float dbm = FPGA_DBM_1LSB + 10.0f * log10f(p_lsb + 1e-12f);
+        pb_dbm = dbm > pb_dbm - 20.0f * dt ? dbm : pb_dbm - 20.0f * dt;
+    }
+    sig /= k1 - k0 + 1;
+    int n = 0;
+    for (int k = -SQ_NOISE_K; k <= SQ_NOISE_K; k++) sq_tmp[n++] = bin_pow(k);
+    qsort(sq_tmp, n, sizeof(float), cmp_float);
+    float noise = sq_tmp[n / 10] / 0.10536f + 1e-30f;
+    sq_sig = sq_sig < 0 ? sig : sq_sig + (sig - sq_sig) * SQ_SIG_A;
+    sq_noise = sq_noise < 0 ? noise : sq_noise + (noise - sq_noise) * SQ_NOISE_A;
+    sq_snr_db = 10.0f * log10f(sq_sig / sq_noise + 1e-12f);
+    sq_fresh = true;
+}
 
 static void spectrum_process(void)
 {
@@ -247,21 +372,20 @@ static void spectrum_process(void)
     t_prev = now;
     if (dt > 0.2f) dt = 0.2f;
 
-    if (view_win)
-        for (int n = 0; n < FFT_N; n++) { fft_buf[2 * n] *= hann[n]; fft_buf[2 * n + 1] *= hann[n]; }
+    if (view_win != SPEC_WIN_OFF) {
+        const float *w = win_tab[view_win];
+        for (int n = 0; n < FFT_N; n++) { fft_buf[2 * n] *= w[n]; fft_buf[2 * n + 1] *= w[n]; }
+    }
     dsps_fft2r_fc32(fft_buf, FFT_N);
     dsps_bit_rev_fc32(fft_buf, FFT_N);
+    sq_measure();
 
-    // bins -> pixels, fftshift (negative frequencies on the left), mean power
-    // per pixel (less noise variance than the max)
+    // bins -> pixels (the middle SPAN_HZ), mean power per pixel weighted by
+    // how much of each bin the pixel covers (less noise variance than the max)
     for (int x = 0; x < LCD_W; x++) {
-        int b0 = x * FFT_N / LCD_W, b1 = (x + 1) * FFT_N / LCD_W;
         float m = 0;
-        for (int b = b0; b < b1; b++) {
-            int k = (b + FFT_N / 2) & (FFT_N - 1);
-            m += fft_buf[2 * k] * fft_buf[2 * k] + fft_buf[2 * k + 1] * fft_buf[2 * k + 1];
-        }
-        px_db[x] = 10.0f * log10f(m / (b1 - b0) + 1e-20f);
+        for (int j = 0; j < px_nk[x]; j++) m += px_w[x][j] * bin_pow(px_k0[x] + j);
+        px_db[x] = 10.0f * log10f(m / BINS_PX + 1e-20f);
     }
 
     // debug capture (console "s"): mean power per FFT bin over N frames
@@ -275,18 +399,29 @@ static void spectrum_process(void)
 
     // 1. averaging between frames, in dB like level_averager.v
     // 2. per-pixel floor: snaps down at once, creeps up at EQ_RISE
+    state_follow();
+    // start-up / floor reset: EQ_SKIP frames prime the averages, then a
+    // running mean (until 1/AVG_A frames) and est = px_avg both ways
     for (int x = 0; x < LCD_W; x++) {
         if (warm < EQ_SKIP) {
             px_avg[x] = px_wf[x] = est[x] = px_db[x];
             continue;
         }
-        px_avg[x] += (px_db[x] - px_avg[x]) * AVG_A;
+        int n = warm - EQ_SKIP + 1;
+        float a = n < (int)(1.0f / AVG_A) ? 1.0f / (n + 1) : AVG_A;
+        px_avg[x] += (px_db[x] - px_avg[x]) * a;
         px_wf[x]  += (px_db[x] - px_wf[x]) * WF_A;
         if (warm < EQ_WARM) est[x] = px_avg[x];
         else est[x] = px_avg[x] < est[x] ? px_avg[x] : est[x] + EQ_RISE * dt;
     }
     if (warm < EQ_WARM) warm++;
+    spectrum_render(true);
+}
 
+// Levels -> panel heights/colours (+ a waterfall row if new_row). Also used
+// without a new frame while the I/Q is stale after a retune.
+static void spectrum_render(bool new_row)
+{
     // 3. lower envelope across frequency: min over k of est[x+k] + |k|*SLOPE.
     // Follows the wide center hump and the edge roll-off, but a station
     // cannot lift it by more than SLOPE per pixel of its half-width.
@@ -297,7 +432,10 @@ static void spectrum_process(void)
     // 4. output = level - envelope: flat noise along the bottom. view_range
     // dB fill the panel (was a fixed 60dB, waterfall 45dB: a 3-6dB station
     // was only 5-10px high and nearly black in the waterfall).
-    wf_head = (wf_head + WF_MAX - 1) % WF_MAX;
+    if (new_row) {
+        wf_head = (wf_head + WF_MAX - 1) % WF_MAX;
+        wf_ctr[wf_head] = (int32_t)lrint(st_center);
+    }
     float k_h = spec_h_px / view_range, k_lv = 255.0f / (view_range * 0.92f), k_wf = 255.0f / (view_range * 0.75f);
     for (int x = 0; x < LCD_W; x++) rel_db[x] = px_avg[x] - env[x];   // dB above the floor
     // Smooth ([1 2 1]/4 in dB): less noise "grass". A lone 1-px peak (CW)
@@ -315,8 +453,17 @@ static void spectrum_process(void)
         spec_h[x] = h < 0 ? 0 : h > spec_h_px ? spec_h_px : h;
         int lv = (int)((rel + 1.0f) * k_lv);
         spec_lv[x] = lv < 0 ? 0 : lv > 255 ? 255 : lv;
-        int w = (int)((px_wf[x] - env[x] + 1.0f) * k_wf);
-        wf[wf_head][x] = w < 0 ? 0 : w > 255 ? 255 : w;
+        if (new_row) {
+            int w = (int)((px_wf[x] - env[x] + 1.0f) * k_wf);
+            wf[wf_head][x] = w < 0 ? 0 : w > 255 ? 255 : w;
+        }
+    }
+    if (new_row) {   // edge fill level: ~75th percentile of the row (noise, stations are above)
+        uint16_t hist[256] = { 0 };
+        for (int x = 0; x < LCD_W; x++) hist[wf[wf_head][x]]++;
+        int acc = 0, v = 0;
+        while (v < 255 && (acc += hist[v]) < LCD_W * 3 / 4) v++;
+        wf_cap[wf_head] = v;
     }
     // Trace: column x is white from the midpoint towards its left neighbour's
     // top to the midpoint towards its right one (and its own top), so the tops
@@ -428,6 +575,9 @@ static void draw_mode(void)
 #define SM_BAR_W   120
 static float sm_dbm = -200;
 static int vol_shown = -1;              // >= 0: volume display instead of the S-meter
+static int sql_shown = -1;              // >= 0: squelch threshold (0 = OFF) + live SNR bar
+static bool sql_closed;                 // squelch shut: S-meter drawn dim
+#define SQ_BAR_DB  30                   // squelch bar: 0..30dB SNR over SM_BAR_W
 static int sm_drawn_px = -1, sm_drawn_kind = -1;
 static char sm_drawn_txt[8];
 static void draw_smeter(bool force)
@@ -435,7 +585,17 @@ static void draw_smeter(bool force)
     char t[16];
     int px, split;
     uint16_t c_lo, c_hi;
-    if (vol_shown >= 0) {
+    int kind = vol_shown >= 0 ? 1 : sql_shown >= 0 ? 2 : sql_closed ? 3 : 0;
+    if (kind == 2) {
+        // "SQ 12" / "SQOFF", bar = SNR in the passband now, tick = threshold
+        if (sql_shown) snprintf(t, sizeof(t), "SQ%3d", sql_shown);
+        else snprintf(t, sizeof(t), "SQOFF");
+        float v = sq_snr_db < 0 ? 0 : sq_snr_db;
+        px = (int)(v * SM_BAR_W / SQ_BAR_DB);
+        if (px > SM_BAR_W) px = SM_BAR_W;
+        split = sql_shown ? sql_shown * SM_BAR_W / SQ_BAR_DB : SM_BAR_W;
+        c_lo = RGB565(90, 90, 120); c_hi = RGB565(0, 220, 80);   // under / over the threshold
+    } else if (kind == 1) {
         snprintf(t, sizeof(t), "VOL%2d", vol_shown);
         px = vol_shown * SM_BAR_W / 23;
         split = SM_BAR_W * 20 / 23;     // 0 dB mark
@@ -451,21 +611,22 @@ static void draw_smeter(bool force)
         }
         if (px > SM_BAR_W) px = SM_BAR_W;
         split = 80;
-        c_lo = RGB565(0, 220, 80); c_hi = RGB565(255, 40, 40);
+        if (kind == 3) { c_lo = RGB565(70, 70, 90); c_hi = RGB565(110, 60, 60); }   // squelch shut
+        else { c_lo = RGB565(0, 220, 80); c_hi = RGB565(255, 40, 40); }
     }
-    int kind = vol_shown >= 0;
     char s[8];
     snprintf(s, sizeof(s), "%-5.5s", t);
     if (force || kind != sm_drawn_kind || strcmp(s, sm_drawn_txt) != 0) {
         strcpy(sm_drawn_txt, s);
-        lcd_text(SM_X, ROW2_Y, &font_mid, s, kind ? RGB565(0, 200, 255) : C_TEXT, C_HDR_BG);
+        uint16_t fg = kind == 1 ? RGB565(0, 200, 255) : kind == 2 ? RGB565(255, 220, 0) : kind == 3 ? C_DIM : C_TEXT;
+        lcd_text(SM_X, ROW2_Y, &font_mid, s, fg, C_HDR_BG);
     }
-    if (force || px != sm_drawn_px || kind != sm_drawn_kind) {
+    if (force || px != sm_drawn_px || kind != sm_drawn_kind || kind == 2) {
         uint16_t *b = lcd_buf_get();
         for (int y = 0; y < 12; y++)
             for (int x = 0; x < SM_BAR_W; x++) {
                 bool on = x < px && y >= 2 && y < 10;
-                bool tick = (y >= 10) && (kind ? (x == split) : (x % 9 == 0 && x <= 80) || (x > 80 && (x - 80) % 13 == 0));
+                bool tick = (y >= 10) && ((kind == 1 || kind == 2) ? (x == split || x == split - 1) : (x % 9 == 0 && x <= 80) || (x > 80 && (x - 80) % 13 == 0));
                 b[y * SM_BAR_W + x] = on ? (x < split ? c_lo : c_hi) : tick ? C_DIM : RGB565(10, 10, 60);
             }
         lcd_buf_send(SM_BAR_X, ROW2_Y + 4, SM_BAR_W, 12);
@@ -483,6 +644,18 @@ void spectrum_set_smeter(float dbm)
 void spectrum_show_volume(int v)
 {
     vol_shown = v;
+    draw_smeter(false);
+}
+
+void spectrum_show_squelch(int thr_db)
+{
+    sql_shown = thr_db;
+    draw_smeter(false);
+}
+
+void spectrum_set_squelch_closed(bool closed)
+{
+    sql_closed = closed;
     draw_smeter(false);
 }
 
@@ -513,15 +686,25 @@ void spectrum_set_mode(const char *name, const char *bw, bool is_auto, float lo_
     if (moved) draw_ruler();
 }
 
-void spectrum_set_view(int range_db, bool window)
+void spectrum_set_view(int range_db, int window)
 {
     view_range = range_db;
-    view_win = window;
+    view_win = window >= 0 && window < SPEC_WIN_N ? window : SPEC_WIN_OFF;
+}
+
+float spectrum_smeter_dbm(void)
+{
+    return pb_dbm;
 }
 
 void spectrum_set_smooth(bool on)
 {
     view_smooth = on;
+}
+
+void spectrum_set_scroll(bool on)
+{
+    scroll_on = on;
 }
 
 void spectrum_floor_reset(void)
@@ -550,6 +733,7 @@ void spectrum_set_dial(uint32_t hz, int step, float lo_offset_hz)
     dial_hz = hz;
     lo_shift_hz = shift;
     step_idx = step;
+    if (moved) sq_sig = -1;      // the old station's level must not hold the squelch
     draw_freq();
     if (moved) draw_ruler();
 }
@@ -621,15 +805,27 @@ static void draw_waterfall(void)
 {
     // no spectrum above it -> the dial is a dashed red line through the waterfall
     int xd = -1;
+    double c = st_valid ? st_center : cur_center();   // what the rows are aligned to now
     if (spec_h_px == 0)
         for (int x = 0; x < LCD_W; x++) if (col_flags[x] & F_DIAL) xd = x;
     for (int y0 = 0; y0 < wf_h; y0 += LCD_CHUNK) {
         int n = wf_h - y0 < LCD_CHUNK ? wf_h - y0 : LCD_CHUNK;
         uint16_t *b = lcd_buf_get();
         for (int l = 0; l < n; l++) {
-            const uint8_t *src = wf[(wf_head + y0 + l) % WF_MAX];
+            int r = (wf_head + y0 + l) % WF_MAX;
+            const uint8_t *src = wf[r];
             uint16_t *row = b + l * LCD_W;
-            for (int x = 0; x < LCD_W; x++) row[x] = heat_pal[src[x]];
+            // row x shows freq wf_ctr + (x - W/2) * HZ_PER_PX -> screen x + off
+            int off = src_sim || !scroll_on ? 0 : (int)lrint((wf_ctr[r] - c) / HZ_PER_PX);
+            for (int x = 0; x < LCD_W; x++) {
+                int xs = x - off;
+                if (xs >= 0 && xs < LCD_W) { row[x] = heat_pal[src[xs]]; continue; }
+                // no data here: a pseudo-random pixel of the same row, capped
+                // at its noise level -> looks like the noise around it
+                uint32_t h = ((uint32_t)x * 2654435761u) ^ ((uint32_t)r * 40503u);
+                uint8_t v = src[(h >> 16) % LCD_W];
+                row[x] = heat_pal[v > wf_cap[r] ? wf_cap[r] : v];
+            }
             if (xd >= 0 && ((y0 + l) & 4)) row[xd] = C_DIAL;
         }
         lcd_buf_send(0, wf_y + y0, LCD_W, n);
@@ -646,7 +842,28 @@ void spectrum_init(void)
     if (!wf) wf = heap_caps_calloc(WF_MAX, LCD_W, MALLOC_CAP_8BIT);
     assert(wf);
     ESP_ERROR_CHECK(dsps_fft2r_init_fc32(NULL, FFT_N));
-    for (int n = 0; n < FFT_N; n++) hann[n] = 0.5f - 0.5f * cosf(2.0f * (float)M_PI * n / FFT_N);
+    for (int n = 0; n < FFT_N; n++) {
+        float t = 2.0f * (float)M_PI * n / FFT_N;
+        win_tab[SPEC_WIN_OFF][n] = 1.0f;
+        win_tab[SPEC_WIN_HANN][n] = 0.5f - 0.5f * cosf(t);
+        win_tab[SPEC_WIN_BH][n] = 0.35875f - 0.48829f * cosf(t) + 0.14128f * cosf(2 * t) - 0.01168f * cosf(3 * t);
+    }
+    for (int w = 0; w < SPEC_WIN_N; w++) {
+        win_pow[w] = 0;
+        for (int n = 0; n < FFT_N; n++) win_pow[w] += win_tab[w][n] * win_tab[w][n];
+    }
+    // pixel x covers [x - W/2 - 0.5, x - W/2 + 0.5) pixels = u0..u0+BINS_PX
+    // bins from the LO; bin k covers [k - 0.5, k + 0.5)
+    for (int x = 0; x < LCD_W; x++) {
+        float u0 = (x - LCD_W / 2 - 0.5f) * BINS_PX, u1 = u0 + BINS_PX;
+        int k = (int)floorf(u0 + 0.5f);
+        px_k0[x] = k;
+        px_nk[x] = 0;
+        for (; k - 0.5f < u1 && px_nk[x] < 3; k++) {
+            float a = fmaxf(u0, k - 0.5f), b = fminf(u1, k + 0.5f);
+            px_w[x][px_nk[x]++] = b > a ? b - a : 0;
+        }
+    }
     siggen_init();
 }
 
@@ -662,6 +879,7 @@ void spectrum_draw_static(void)
 void spectrum_step(const float *iq, const char *src_name)
 {
     int64_t t0 = esp_timer_get_time();
+    src_sim = !iq;
     if (iq) memcpy(fft_buf, iq, sizeof(fft_buf));
     else    siggen_block(fft_buf);
     int64_t t1 = esp_timer_get_time();
@@ -685,6 +903,34 @@ void spectrum_step(const float *iq, const char *src_name)
         sum_gen = sum_fft = sum_draw = 0;
         t_sec = t3;
     }
+}
+
+bool spectrum_sq_snr(float *snr_db, float *sig_db, float *noise_db)
+{
+    if (snr_db) *snr_db = sq_snr_db;
+    if (sig_db) *sig_db = 10.0f * log10f(sq_sig > 0 ? sq_sig : 1e-30f);
+    if (noise_db) *noise_db = 10.0f * log10f(sq_noise > 0 ? sq_noise : 1e-30f);
+    bool f = sq_fresh;
+    sq_fresh = false;
+    return f;
+}
+
+void spectrum_feed(const float *iq)
+{
+    src_sim = false;
+    memcpy(fft_buf, iq, sizeof(fft_buf));
+    spectrum_process();
+}
+
+// No usable frame (the I/Q straddles a retune): redraw the old picture,
+// shifted to the new dial, without adding a waterfall row.
+void spectrum_hold(void)
+{
+    if (!st_valid) return;
+    state_follow();
+    spectrum_render(false);
+    draw_spectrum();
+    draw_waterfall();
 }
 
 // ---- debug capture for the serial console (main.c "s") ----
