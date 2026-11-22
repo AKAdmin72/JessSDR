@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="555" viewBox="0 0 1000 555" font-family="Helvetica, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#333"/>
+    </marker>
+    <style>
+      .b{fill:#fff;stroke:#333;stroke-width:1.3;rx:6}
+      .t{text-anchor:middle;fill:#111}
+      .s{text-anchor:middle;fill:#555;font-size:11px}
+      .l{stroke:#333;stroke-width:1.5;fill:none;marker-end:url(#a)}
+      .h{font-weight:bold;font-size:14px;fill:#111}
+      .n{fill:#555;font-size:11px}
+    </style>
+  </defs>
+  <rect width="1000" height="560" fill="#fafafa"/>
+
+  <!-- RF -->
+  <rect x="10" y="20" width="170" height="250" rx="10" fill="#eef6ee" stroke="#6a6"/>
+  <text x="20" y="40" class="h">RF front end</text>
+  <rect class="b" x="30" y="60" width="130" height="44"/><text class="t" x="95" y="80">Antenna</text><text class="s" x="95" y="96">0.1–30 MHz</text>
+  <rect class="b" x="30" y="130" width="130" height="44"/><text class="t" x="95" y="150">Filter (BPF/LPF)</text><text class="s" x="95" y="166">now: 40 m BPF</text>
+  <rect class="b" x="30" y="200" width="130" height="54"/><text class="t" x="95" y="220">AD9226</text><text class="s" x="95" y="236">AD8138 mod +25 dB</text><text class="s" x="95" y="249">12 bit, 64.8 MSPS</text>
+  <path class="l" d="M95,104 V128"/><path class="l" d="M95,174 V198"/>
+
+  <!-- Tang -->
+  <rect x="200" y="20" width="460" height="330" rx="10" fill="#eef2fb" stroke="#68a"/>
+  <text x="210" y="40" class="h">Tang Nano 20K (GW2AR-18), sdr_esp/</text>
+  <rect class="b" x="220" y="60" width="120" height="54"/><text class="t" x="280" y="80">DDC</text><text class="s" x="280" y="96">NCO + I/Q mixer</text><text class="s" x="280" y="109">CIC4</text>
+  <rect class="b" x="370" y="60" width="120" height="54"/><text class="t" x="430" y="80">SSB / AM</text><text class="s" x="430" y="96">255-tap filter</text><text class="s" x="430" y="109">52.7 kHz</text>
+  <rect class="b" x="520" y="60" width="120" height="54"/><text class="t" x="580" y="80">AGC</text><text class="s" x="580" y="96">fast / med / slow</text>
+  <rect class="b" x="520" y="140" width="120" height="54"/><text class="t" x="580" y="160">NR / ANF</text><text class="s" x="580" y="176">LMS + 2nd AGC</text>
+  <rect class="b" x="370" y="140" width="120" height="54"/><text class="t" x="430" y="160">VOL + ×4 FIR</text><text class="s" x="430" y="176">I2S 48.2 kHz</text>
+  <rect class="b" x="220" y="140" width="120" height="54"/><text class="t" x="280" y="160">MAX98357A</text><text class="s" x="280" y="176">on-board amp</text>
+  <rect class="b" x="220" y="230" width="120" height="54"/><text class="t" x="280" y="250">wide CIC</text><text class="s" x="280" y="266">105.5 kHz I/Q</text>
+  <rect class="b" x="370" y="230" width="120" height="54"/><text class="t" x="430" y="250">iq_i2s_tx</text><text class="s" x="430" y="266">I2S master</text>
+  <rect class="b" x="520" y="230" width="120" height="54"/><text class="t" x="580" y="250">spi_regs</text><text class="s" x="580" y="266">freq, mode,</text><text class="s" x="580" y="279">filter, S, CLIP</text>
+  <rect class="b" x="220" y="300" width="120" height="40"/><text class="t" x="280" y="317">Buttons S1/S2</text><text class="s" x="280" y="332">backup controls</text>
+  <path class="l" d="M160,227 H190 V87 H218"/>
+  <path class="l" d="M340,87 H368"/><path class="l" d="M490,87 H518"/>
+  <path class="l" d="M580,114 V138"/><path class="l" d="M520,167 H492"/><path class="l" d="M370,167 H342"/>
+  <path class="l" d="M280,114 V228"/>
+  <path class="l" d="M340,257 H368"/>
+  <path class="l" d="M340,320 H535 V286"/>
+
+  <!-- speaker -->
+  <rect class="b" x="40" y="300" width="120" height="40"/><text class="t" x="100" y="325">Speaker</text>
+  <path class="l" d="M220,180 H206 V320 H162"/>
+
+  <!-- ESP -->
+  <rect x="200" y="380" width="460" height="165" rx="10" fill="#fbf1e8" stroke="#c84"/>
+  <text x="210" y="400" class="h">ESP32-S3 DevKitC N16R8, esp32/</text>
+  <rect class="b" x="220" y="420" width="120" height="54"/><text class="t" x="280" y="440">I2S slave</text><text class="s" x="280" y="456">FFT 2048, window</text><text class="s" x="280" y="469">S-meter, squelch</text>
+  <rect class="b" x="370" y="420" width="120" height="54"/><text class="t" x="430" y="440">Spectrum</text><text class="s" x="430" y="456">waterfall ±35 kHz</text><text class="s" x="430" y="469">35 fps</text>
+  <rect class="b" x="520" y="420" width="120" height="54"/><text class="t" x="580" y="440">Menu, NVS</text><text class="s" x="580" y="456">modes, filters,</text><text class="s" x="580" y="469">tests, calibration</text>
+  <rect class="b" x="370" y="490" width="270" height="40"/><text class="t" x="505" y="515">Энкодер LPD3806 (PCNT) + SELECT</text>
+  <path class="l" d="M430,284 V340 H200 V447 H218"/>
+  <text x="206" y="365" class="n">I2S: BCK / WS / DATA</text>
+  <path class="l" d="M340,447 H368"/><path class="l" d="M505,490 V476"/>
+  <path class="l" d="M600,418 V288"/><path class="l" d="M560,288 V418"/>
+  <text x="608" y="370" class="n">SPI, 4 wires</text>
+
+  <!-- TFT -->
+  <rect x="700" y="380" width="285" height="165" rx="10" fill="#f3eefa" stroke="#86a"/>
+  <text x="710" y="400" class="h">Display</text>
+  <rect class="b" x="720" y="420" width="245" height="54"/><text class="t" x="842" y="440">4" ST7796S 480×320</text><text class="s" x="842" y="456">SPI 80 MHz, DMA</text>
+  <path class="l" d="M640,447 H718"/>
+
+  <!-- PC -->
+  <rect x="700" y="20" width="285" height="130" rx="10" fill="#f2f2f2" stroke="#999"/>
+  <text x="710" y="40" class="h">PC (optional)</text>
+  <text x="712" y="64" class="n">USB-C Tang: flashing, UART 1 Mbaud</text>
+  <text x="712" y="82" class="n">   tools/sdr.py, tools/adc65.py</text>
+  <text x="712" y="104" class="n">USB-C ESP (COM): console</text>
+  <text x="712" y="122" class="n">   sm, nz, sq, lcd ...</text>
+</svg>
